@@ -1,0 +1,1091 @@
+---
+title: "Ofav scRNA-seq Microbiome"
+author: "Anthony Bonacolta"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/Volumes/GoogleDrive/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis')
+```
+
+# 16S DADA2
+```{bash}
+cd /Volumes/projects/bonacolta/sc_ofav/Ofav_Exp_Spring2022/microbiome/16S/raw_data/combined
+
+ls *_16S.raw_1.fastq.gz | cut -f 1-2 -d "_" > samples
+for sample in $(cat samples)
+do
+    echo "On sample: $sample"
+    cutadapt -a NNNNNNNNGTGYCAGCMGCCGCGGTAA...ATTAGAWACCCBNGTAGTCCNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN \
+    -A NNNNNNNNGGACTACNVGGGTWTCTAAT...TTACCGCGGCKGCTGRCACNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN \
+    --match-read-wildcards \
+    -m 150:150 -M 300:300 --discard-untrimmed \
+    -o ${sample}_L001_R1_001_trimmed.fastq.gz -p ${sample}_L001_R2_001_trimmed.fastq.gz \
+    ${sample}_16S.raw_1.fastq.gz ${sample}_16S.raw_2.fastq.gz \
+    >> cutadapt_primer_trimming_stats.txt 2>&1
+done
+
+paste samples <(grep "passing" cutadapt_primer_trimming_stats.txt | cut -f3 -d "(" | tr -d ")") <(grep "filtered" cutadapt_primer_trimming_stats.txt | cut -f3 -d "(" | tr -d ")")
+```
+
+```{r}
+library(dada2); packageVersion("dada2")
+path <- "/Volumes/projects/bonacolta/sc_ofav/Ofav_Exp_Spring2022/microbiome/16S/raw_data/combined" # CHANGE ME to the directory containing the fastq files after unzipping.
+list.files(path)
+fnFs <- sort(list.files(path, pattern="_L001_R1_001_trimmed.fastq", full.names = TRUE))
+fnRs <- sort(list.files(path, pattern="_L001_R2_001_trimmed.fastq", full.names = TRUE))
+sample.names <- sapply(strsplit(basename(fnFs), "_L001"), `[`, 1)
+plotQualityProfile(fnFs[2:4])
+plotQualityProfile(fnRs[2:4])
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, trimLeft=0, truncLen=c(165,165),
+              maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
+              compress=TRUE, multithread=TRUE, matchIDs=TRUE)
+head(out)
+set.seed(100)
+errF <- learnErrors(filtFs, nbases=1e8, multithread=2, randomize=TRUE)
+errR <- learnErrors(filtRs, nbases=1e8, multithread=2, randomize=TRUE)
+plotErrors(errF, nominalQ=TRUE)
+plotErrors(errR, nominalQ=TRUE)
+derepFs <- derepFastq(filtFs)
+derepRs <- derepFastq(filtRs)
+sam.names <- sapply(strsplit(basename(filtFs), "_"), `[`, 1)
+names(derepFs) <- sam.names
+names(derepRs) <- sam.names
+ddFs <- dada(derepFs, err=NULL, selfConsist=TRUE)
+ddRs <- dada(derepRs, err=NULL, selfConsist=TRUE)
+plotErrors(ddFs)
+plotErrors(ddRs)
+dadaFs <- dada(derepFs, err=ddFs[[1]]$err_out, pool=TRUE, multithread=2)
+dadaRs <- dada(derepRs, err=ddRs[[1]]$err_out, pool=TRUE, multithread=2)
+dadaFs[[1]]
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose=TRUE)
+head(mergers[[1]])
+seqtab.all <- makeSequenceTable(mergers)
+seqtab <- removeBimeraDenovo(seqtab.all)
+dim(seqtab)
+table(nchar(getSequences(seqtab))) # Inspect distribution of sequence lengths. Highest at 253 bp
+ref_fasta <- "~/Downloads/silva_nr99_v138.1_train_set.fa.gz"
+taxa <- assignTaxonomy(seqtab, refFasta=ref_fasta, multithread=2)
+colnames(taxa) <- c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus")
+taxa <- addSpecies(taxa, "~/Downloads/silva_species_assignment_v138.1.fa.gz")
+taxa.print <- taxa
+
+asv_seqs <- colnames(seqtab)
+asv_headers <- vector(dim(seqtab)[2], mode="character")
+for (i in 1:dim(seqtab)[2]) {
+ asv_headers[i] <- paste(">16S_ASV", i, sep="_")
+}
+asv_fasta <- c(rbind(asv_headers, asv_seqs))
+write(asv_fasta, "/Volumes/GoogleDrive/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/dada2/16S/ASVs.fa")
+
+asv_tab <- t(seqtab)
+row.names(asv_tab) <- sub(">", "", asv_headers)
+write.table(asv_tab, "/Volumes/GoogleDrive/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/dada2/16S/ASVs_counts.tsv", sep="\t", quote=F, col.names=NA)
+
+asv_tax <- taxa
+row.names(asv_tax) <- sub(">", "", asv_headers)
+write.table(asv_tax, "/Volumes/GoogleDrive/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/dada2/16S/ASVs_taxonomy.tsv", sep="\t", quote=F, col.names=NA)
+
+asv_tabtax <- cbind(asv_tab,asv_tax)
+row.names(asv_tabtax) <- sub(">", "", asv_headers)
+write.table(asv_tabtax, "/Volumes/GoogleDrive/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/dada2/16S/ASVs_counts_taxonomy.tsv", sep="\t", quote=F, col.names=NA)
+```
+
+# 18S DADA2
+```{bash}
+cd /Volumes/projects/bonacolta/sc_ofav/Ofav_Exp_Spring2022/microbiome/18S/raw_data/combined
+
+ls *.18S.raw_1.fastq.gz | cut -f 1-2 -d "." > samples
+for sample in $(cat samples)
+do
+    echo "On sample: $sample"
+    cutadapt -a NNNNNNNNCYGCGGTAATTCCAGCTC...CRAAGAYGATYAGATACCRT \
+    -A NNNNNNNNAYGGTATCTRATCRTCTTYG...GAGCTGGAATTACCGCRG \
+    --match-read-wildcards \
+    -m 150:150 -M 500:500 --discard-untrimmed \
+    -o ${sample}_L001_R1_001_trimmed.fastq.gz -p ${sample}_L001_R2_001_trimmed.fastq.gz \
+    ${sample}.18S.raw_1.fastq.gz ${sample}.18S.raw_2.fastq.gz \
+    >> cutadapt_primer_trimming_stats.txt 2>&1
+done
+
+paste samples <(grep "passing" cutadapt_primer_trimming_stats.txt | cut -f3 -d "(" | tr -d ")") <(grep "filtered" cutadapt_primer_trimming_stats.txt | cut -f3 -d "(" | tr -d ")")
+```
+
+```{r}
+library(dada2); packageVersion("dada2")
+path <- "/Volumes/projects/bonacolta/sc_ofav/Ofav_Exp_Spring2022/microbiome/18S/raw_data/combined" # CHANGE ME to the directory containing the fastq files after unzipping.
+list.files(path)
+fnFs <- sort(list.files(path, pattern="_L001_R1_001_trimmed.fastq.gz", full.names = TRUE))
+fnRs <- sort(list.files(path, pattern="_L001_R2_001_trimmed.fastq.gz", full.names = TRUE))
+sample.names <- sapply(strsplit(basename(fnFs), "_L001"), `[`, 1)
+plotQualityProfile(fnFs[2:4])
+plotQualityProfile(fnRs[2:4])
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, trimLeft=0, truncLen=c(210,210),
+              maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
+              compress=TRUE, multithread=TRUE, matchIDs=TRUE)
+head(out)
+set.seed(100)
+errF <- learnErrors(filtFs, nbases=1e8, multithread=2, randomize=TRUE)
+errR <- learnErrors(filtRs, nbases=1e8, multithread=2, randomize=TRUE)
+plotErrors(errF, nominalQ=TRUE)
+plotErrors(errR, nominalQ=TRUE)
+derepFs <- derepFastq(filtFs)
+derepRs <- derepFastq(filtRs)
+sam.names <- sapply(strsplit(basename(filtFs), "_"), `[`, 1)
+names(derepFs) <- sam.names
+names(derepRs) <- sam.names
+ddFs <- dada(derepFs, err=NULL, selfConsist=TRUE)
+ddRs <- dada(derepRs, err=NULL, selfConsist=TRUE)
+plotErrors(ddFs)
+plotErrors(ddRs)
+dadaFs <- dada(derepFs, err=ddFs[[1]]$err_out, pool=TRUE, multithread=2)
+dadaRs <- dada(derepRs, err=ddRs[[1]]$err_out, pool=TRUE, multithread=2)
+dadaFs[[1]]
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose=TRUE)
+head(mergers[[1]])
+seqtab.all <- makeSequenceTable(mergers)
+seqtab <- removeBimeraDenovo(seqtab.all)
+dim(seqtab)
+table(nchar(getSequences(seqtab))) # Inspect distribution of sequence lengths. Highest at 253 bp
+ref_fasta <- "~/Downloads/pr2_version_5.0.0_SSU_dada2.fasta.gz"
+taxa <- assignTaxonomy(seqtab, refFasta=ref_fasta, multithread=2, taxLevels = c("Domain","Supergroup","Division", "Subdivision", "Class", "Order","Family","Genus","Species"))
+colnames(taxa) <- c("Domain","Supergroup","Division", "Subdivision", "Class", "Order","Family","Genus","Species")
+taxa.print <- taxa
+
+asv_seqs <- colnames(seqtab)
+asv_headers <- vector(dim(seqtab)[2], mode="character")
+for (i in 1:dim(seqtab)[2]) {
+ asv_headers[i] <- paste(">18S_ASV", i, sep="_")
+}
+asv_fasta <- c(rbind(asv_headers, asv_seqs))
+write(asv_fasta, "/Volumes/GoogleDrive/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/dada2/18S/ASVs.fa")
+
+asv_tab <- t(seqtab)
+row.names(asv_tab) <- sub(">", "", asv_headers)
+write.table(asv_tab, "/Volumes/GoogleDrive/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/dada2/18S/ASVs_counts.tsv", sep="\t", quote=F, col.names=NA)
+
+asv_tax <- taxa
+row.names(asv_tax) <- sub(">", "", asv_headers)
+write.table(asv_tax, "/Volumes/GoogleDrive/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/dada2/18S/ASVs_taxonomy.tsv", sep="\t", quote=F, col.names=NA)
+
+asv_tabtax <- cbind(asv_tab,asv_tax)
+row.names(asv_tabtax) <- sub(">", "", asv_headers)
+write.table(asv_tabtax, "/Volumes/GoogleDrive/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/dada2/18S/ASVs_counts_taxonomy.tsv", sep="\t", quote=F, col.names=NA)
+```
+
+# Phyloseq
+```{r}
+library(phyloseq)
+SV_16S <- read.table("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/dada2/16S/ASVs_counts.tsv", row.names = 1, check.names= FALSE, sep = "\t", header = TRUE)
+tax_16S <-as.matrix(read.table("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/dada2/16S/ASVs_taxonomy.tsv", row.names = 1, header = TRUE, sep = "\t"))
+map_16S <- read.table("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/dada2/metadata.txt", row.names = 1, sep ="\t", header = TRUE)
+
+ps_16S = phyloseq(otu_table(SV_16S, taxa_are_rows=TRUE), 
+               sample_data(map_16S), 
+               tax_table(tax_16S))
+ps_16S
+
+SV_18S <- read.table("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/dada2/18S/ASVs_counts.tsv", row.names = 1, check.names= FALSE, sep = "\t", header = TRUE)
+tax_18S <-as.matrix(read.table("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/dada2/18S/ASVs_taxonomy.tsv", row.names = 1, header = TRUE, sep = "\t"))
+map_18S <- read.table("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/dada2/metadata.txt", row.names = 1, sep ="\t", header = TRUE)
+
+ps_18S = phyloseq(otu_table(SV_18S, taxa_are_rows=TRUE), 
+               sample_data(map_18S), 
+               tax_table(tax_18S))
+ps_18S
+
+psf_16S <- subset_taxa(ps_16S, (Order!="Chloroplast"| is.na(Order)))
+psf_16S <- subset_taxa(psf_16S, (Family!="Mitochondria"| is.na(Family)))
+ps_16S
+psf_16S
+psf_16S <- prune_samples(sample_sums(psf_16S)>=1000, psf_16S)
+psf_16S
+f1<- filterfun_sample(topf(0.99))
+wh1 <- genefilter_sample(psf_16S, f1, A=2)
+psf_16S <- prune_taxa(wh1, psf_16S)
+psf_16S
+
+psf_18S <- subset_taxa(ps_18S, (Subdivision!="Metazoa"| is.na(Division)))
+psf_18S <- subset_taxa(psf_18S, (Class!="Embryophyceae"| is.na(Class)))
+ps_18S
+psf_18S
+psf_18S <- prune_samples(sample_sums(psf_18S)>=1000, psf_18S)
+psf_18S
+f1<- filterfun_sample(topf(0.99))
+wh1 <- genefilter_sample(psf_18S, f1, A=2)
+psf_18S <- prune_taxa(wh1, psf_18S)
+psf_18S
+
+##Export so I can just load these next time
+# Save the object to an .rds file
+#saveRDS(psf_16S, file = "/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/psf_16S.rds")
+#saveRDS(psf_18S, file = "/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/psf_18S.rds")
+psf_18S <- readRDS("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/psf_18S.rds")
+psf_18S
+psf_16S <- readRDS("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/psf_16S.rds")
+psf_16S
+```
+### Fix Taxonomic String
+```{r}
+library(stringr)
+tax.clean <- psf_16S@tax_table
+tax.clean <- data.frame(row.names = row.names(tax.clean),
+Kingdom = str_replace(tax.clean[,1], "D_0__",""),
+Phylum = str_replace(tax.clean[,2], "D_1__",""),
+Class = str_replace(tax.clean[,3], "D_2__",""),
+Order = str_replace(tax.clean[,4], "D_3__",""),
+Family = str_replace(tax.clean[,5], "D_4__",""),
+Genus = str_replace(tax.clean[,6], "D_5__",""),
+Species = str_replace(tax.clean[,7], "D_6__",""),
+stringsAsFactors = FALSE)
+tax.clean[is.na(tax.clean)] <- ""
+
+for (i in 1:7){ tax.clean[,i] <- as.character(tax.clean[,i])}
+####### Fille holes in the tax table
+tax.clean[is.na(tax.clean)] <- ""
+for (i in 1:nrow(tax.clean)){
+  
+  if (tax.clean[i,2] == ""){kingdom <- paste(tax.clean[i,1],"_X", sep = "")
+  tax.clean[i, 2] <- kingdom
+  tax.clean[i, 3] <- paste(kingdom,"X", sep = "")
+  tax.clean[i, 4] <- paste(kingdom,"XX", sep = "")
+  tax.clean[i, 5] <- paste(kingdom,"XXX", sep = "")
+  tax.clean[i, 6] <- paste(kingdom,"XXXX", sep = "")
+  tax.clean[i, 7] <- paste(kingdom,"XXXX_sp.", sep = "")
+} else 
+  if (tax.clean[i,3] == ""){phylum <- paste(tax.clean[i,2], "_X", sep = "")
+  tax.clean[i, 3] <- phylum
+  tax.clean[i, 4] <- paste(phylum,"X", sep = "")
+  tax.clean[i, 5] <- paste(phylum,"XX", sep = "")
+  tax.clean[i, 6] <- paste(phylum,"XXX", sep = "")
+  tax.clean[i, 7] <- paste(phylum,"XXX_sp.", sep = "")
+} else 
+  if (tax.clean[i,4] == ""){class <- paste(tax.clean[i,3], "_X", sep = "")
+  tax.clean[i, 4] <- class
+  tax.clean[i, 5] <- paste(class,"X", sep = "")
+  tax.clean[i, 6] <- paste(class,"XX", sep = "")
+  tax.clean[i, 7] <- paste(class,"XX_sp.", sep = "")
+} else 
+  if (tax.clean[i,5] == ""){order <- paste(tax.clean[i,4], "_X", sep = "")
+  tax.clean[i, 5] <- order
+  tax.clean[i, 6] <- paste(order,"X", sep = "")
+  tax.clean[i, 7] <- paste(order,"X_sp.", sep = "")
+} else 
+  if (tax.clean[i,6] == ""){family <- paste(tax.clean[i,5], "_X", sep = "")
+  tax.clean[i, 6] <- family
+   tax.clean[i, 7] <- paste(family,"X_sp.", sep = "")
+} else 
+  if (tax.clean[i,7] == ""){tax.clean$Species[i] <- paste(tax.clean$Genus[i], "sp.",sep = "_")}
+}
+View(tax.clean)
+tax_table(psf_16S) <- as.matrix(tax.clean)
+
+tax.clean <- psf_18S@tax_table
+
+tax.clean <- data.frame(row.names = row.names(psf_18S@tax_table),
+Domain = str_replace(psf_18S@tax_table[,1], "D_0__",""),
+Supergroup = str_replace(psf_18S@tax_table[,2], "D_1__",""),
+Division = str_replace(psf_18S@tax_table[,3], "D_2__",""),
+Subdivision = str_replace(psf_18S@tax_table[,4], "D_3__",""),
+Class = str_replace(psf_18S@tax_table[,5], "D_4__",""),
+Order = str_replace(psf_18S@tax_table[,6], "D_5__",""),
+Family = str_replace(psf_18S@tax_table[,7], "D_6__",""),
+Genus = str_replace(psf_18S@tax_table[,8], "D_7__",""),
+Species = str_replace(psf_18S@tax_table[,9], "D_8__",""),
+stringsAsFactors = FALSE)
+
+tax.clean[is.na(tax.clean)] <- ""
+
+for (i in 1:9){ tax.clean[,i] <- as.character(tax.clean[,i])}
+####### Fille holes in the tax table
+tax.clean[is.na(tax.clean)] <- ""
+for (i in 1:nrow(tax.clean)){
+  
+  if (tax.clean[i,2] == ""){domain <- paste(tax.clean[i,1],"_X", sep = "")
+  tax.clean[i, 2] <- domain
+  tax.clean[i, 3] <- paste(domain,"X", sep = "")
+  tax.clean[i, 4] <- paste(domain,"XX", sep = "")
+  tax.clean[i, 5] <- paste(domain,"XXX", sep = "")
+  tax.clean[i, 6] <- paste(domain,"XXXX", sep = "")
+  tax.clean[i, 7] <- paste(domain,"XXXXX", sep = "")
+  tax.clean[i, 8] <- paste(domain,"XXXXXX", sep = "")
+  tax.clean[i, 9] <- paste(domain,"XXXXXX_sp.", sep = "")
+} else 
+  if (tax.clean[i,3] == ""){supergroup <- paste(tax.clean[i,2], "_X", sep = "")
+  tax.clean[i, 3] <- supergroup
+  tax.clean[i, 4] <- paste(supergroup,"X", sep = "")
+  tax.clean[i, 5] <- paste(supergroup,"XX", sep = "")
+  tax.clean[i, 6] <- paste(supergroup,"XXX", sep = "")
+  tax.clean[i, 7] <- paste(supergroup,"XXXX.", sep = "")
+  tax.clean[i, 8] <- paste(supergroup,"XXXXX", sep = "")
+  tax.clean[i, 9] <- paste(supergroup,"XXXXX_sp.", sep = "")
+} else 
+  if (tax.clean[i,4] == ""){division <- paste(tax.clean[i,3], "_X", sep = "")
+  tax.clean[i, 4] <- division
+  tax.clean[i, 5] <- paste(division,"X", sep = "")
+  tax.clean[i, 6] <- paste(division,"XX", sep = "")
+  tax.clean[i, 7] <- paste(division,"XXX", sep = "")
+  tax.clean[i, 8] <- paste(division,"XXXX", sep = "")
+  tax.clean[i, 9] <- paste(division,"XXXX_sp.", sep = "")
+} else 
+  if (tax.clean[i,5] == ""){subdivision <- paste(tax.clean[i,4], "_X", sep = "")
+  tax.clean[i, 5] <- subdivision
+  tax.clean[i, 6] <- paste(subdivision,"X", sep = "")
+  tax.clean[i, 7] <- paste(subdivision,"XX", sep = "")
+  tax.clean[i, 8] <- paste(subdivision,"XXX", sep = "")
+  tax.clean[i, 9] <- paste(subdivision,"XXX_sp.", sep = "")
+} else 
+  if (tax.clean[i,6] == ""){class <- paste(tax.clean[i,5], "_X", sep = "")
+  tax.clean[i, 6] <- class
+  tax.clean[i, 7] <- paste(class,"X", sep = "")
+  tax.clean[i, 8] <- paste(class,"XX", sep = "")
+  tax.clean[i, 9] <- paste(class,"XX_sp.", sep = "")
+} else 
+  if (tax.clean[i,7] == ""){order <- paste(tax.clean[i,6], "_X", sep = "")
+  tax.clean[i, 7] <- order
+  tax.clean[i, 8] <- paste(order,"X", sep = "")
+  tax.clean[i, 9] <- paste(order,"X_sp.", sep = "")
+} else 
+  if (tax.clean[i,8] == ""){family <- paste(tax.clean[i,7], "_X", sep = "")
+  tax.clean[i, 8] <- family
+  tax.clean[i, 9] <- paste(family,"X_sp.", sep = "")
+} else 
+  if (tax.clean[i,9] == ""){tax.clean$Species[i] <- paste(tax.clean$Genus[i], "sp.",sep = "_")}
+}
+View(tax.clean)
+tax_table(psf_18S) <- as.matrix(tax.clean)
+
+```
+
+## Alpha Diversity
+```{r}
+library(microbiome)
+library(ggpubr)
+library(knitr)
+library(dplyr)
+ad <- prune_taxa(taxa_sums(psf_16S) > 0, psf_16S)
+tab <- microbiome::alpha(ad, index = "all")
+kable(head(tab))
+ps1.meta <- meta(ad)
+kable(head(ps1.meta))
+ps1.meta$Shannon <- tab$diversity_shannon # We want to look at the shannon-weiner diversity index.
+fam <- unique(ps1.meta$Combine) # get the variables. This is the column in your metadata you wish to group!
+fam.pairs <- combn(seq_along(fam), 2, simplify = FALSE, FUN = function(i)fam[i])
+print(fam.pairs)
+p1 <- ggboxplot(ps1.meta, x = "Combine", y = "Shannon",
+ add = "boxplot", fill = "Combine") + theme_classic() + scale_fill_manual(values= c("#3A9AB2", "#3A9AB2", "#3A9AB2", "#ADC397", "#3A9AB2", "#E5A208", "#3A9AB2", "#F11B00"))
+print(p1)
+pdf("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/alpha_16s.pdf",  width=7, height=5)
+plot(p1)
+dev.off()
+
+ad <- prune_taxa(taxa_sums(psf_18S) > 0, psf_18S)
+tab <- microbiome::alpha(ad, index = "all")
+kable(head(tab))
+ps1.meta <- meta(ad)
+kable(head(ps1.meta))
+ps1.meta$Shannon <- tab$diversity_shannon # We want to look at the shannon-weiner diversity index.
+fam <- unique(ps1.meta$Combine) # get the variables. This is the column in your metadata you wish to group!
+fam.pairs <- combn(seq_along(fam), 2, simplify = FALSE, FUN = function(i)fam[i])
+print(fam.pairs)
+p1 <- ggboxplot(ps1.meta, x = "Combine", y = "Shannon",
+ add = "boxplot", fill = "Combine") + theme_classic() + scale_fill_manual(values= c("#3A9AB2", "#3A9AB2", "#3A9AB2", "#ADC397", "#3A9AB2", "#E5A208", "#3A9AB2", "#F11B00"))
+print(p1)
+pdf("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/alpha_18s.pdf",  width=7, height=5)
+plot(p1)
+dev.off()
+## No significance so outputting without stats
+```
+
+## Beta-diversity
+```{r}
+library(ALDEx2);packageVersion("ALDEx2")
+library(vegan); packageVersion("vegan")
+library(CoDaSeq); packageVersion("CoDaSeq")
+taxon <- psf_16S@tax_table
+d.czm <- cmultRepl(psf_16S@otu_table, method="CZM", label=0)
+d.clr <- codaSeq.clr(d.czm)
+E.clr <- t(d.clr)
+d.pcx <- prcomp(E.clr)
+dist.clr <- dist(E.clr)
+var1 <- psf_16S@sam_data$Combine
+ano.var1 <- anosim(dist.clr, var1, permutations=999)
+plot(ano.var1)
+##R=0.715, P = 0.001
+perm<-adonis(dist.clr~var1,as(sample_data(psf_16S),"data.frame"))
+print(perm)
+#          Df SumsOfSqs MeanSqs F.Model     R2 Pr(>F)    
+#var1       7    445476   63639  3.5932 0.6112  0.001 ***
+#Residuals 16    283381   17711         0.3888           
+#Total     23    728857                 1.0000           
+#Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+ps_clr <- microbiome::transform(psf_16S, 'clr', shift = 1)
+psr_clr.ord <- ordinate(ps_clr, "RDA", "euclidean")
+PCA = plot_ordination(ps_clr, psr_clr.ord, 
+                                shape="Treament",
+                                color="Timepoint",
+                                title="Aitchison Distance PCA - Prokaryome") + theme_classic() + geom_point(aes(color = Timepoint), alpha = 0.8, size = 3) + scale_colour_manual(values = colors_to_use) + scale_shape_manual(values=c(19,17)) + labs(shape='Treatment', color="Timepoint")
+PCA
+pdf("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/beta_16s.pdf",  width=7, height=5)
+plot(PCA)
+dev.off()
+
+
+taxon <- psf_18S@tax_table
+d.czm <- cmultRepl(psf_18S@otu_table, method="CZM", label=0)
+d.clr <- codaSeq.clr(d.czm)
+E.clr <- t(d.clr)
+d.pcx <- prcomp(E.clr)
+dist.clr <- dist(E.clr)
+var1 <- psf_18S@sam_data$Combine
+ano.var1 <- anosim(dist.clr, var1, permutations=999)
+plot(ano.var1)
+##R=0.802, P = 0.001
+perm<-adonis(dist.clr~var1,as(sample_data(psf_18S),"data.frame"))
+print(perm)
+#          Df SumsOfSqs MeanSqs F.Model      R2 Pr(>F)    
+#var1       7    117199 16742.7  2.7806 0.54884  0.001 ***
+#Residuals 16     96341  6021.3         0.45116           
+#Total     23    213540                 1.00000      
+ps_clr <- microbiome::transform(psf_18S, 'clr', shift = 1)
+psr_clr.ord <- ordinate(ps_clr, "RDA", "euclidean")
+PCA = plot_ordination(ps_clr, psr_clr.ord, 
+                                shape="Treament",
+                                color="Timepoint",
+                                title="Aitchison Distance PCA - Eukaryome") + theme_classic() + geom_point(aes(color = Timepoint), alpha = 0.8, size = 3) + scale_colour_manual(values = colors_to_use) + scale_shape_manual(values=c(19,17)) + labs(shape='Treatment', color="Timepoint")
+PCA
+pdf("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/beta_18s.pdf",  width=7, height=5)
+plot(PCA)
+dev.off()
+```
+## Compositional Analysis
+#### Sort taxa for aesthetics + colors
+```{r}
+tax.sort <- as.data.frame(psf_16S@tax_table)
+tax.sort <- tax.sort %>%
+  arrange(Kingdom,	Phylum,	Class,	Order,	Family,	Genus,	Species)
+orders_16S <- tax.sort %>%
+  pull(Order) %>%
+  unique() %>%
+  toString()
+# Split the string into individual values
+orders_16S <- strsplit(orders_16S, ", ")[[1]]
+orders_16S <- c(orders_16S, "Below Threshold")
+
+tax.sort <- as.data.frame(psf_16S@tax_table)
+tax.sort <- tax.sort %>%
+  arrange(Kingdom,	Phylum,	Class,	Order,	Family,	Genus,	Species)
+family_16S <- tax.sort %>%
+  pull(Family) %>%
+  unique() %>%
+  toString()
+# Split the string into individual values
+family_16S <- strsplit(family_16S, ", ")[[1]]
+family_16S <- c(family_16S, "Below Threshold")
+
+tax.sort <- as.data.frame(psf_18S@tax_table)
+tax.sort <- tax.sort %>%
+  arrange(Domain, Supergroup, Division, Subdivision, Class, Order, Family, Genus, Species)
+genera_18S <- tax.sort %>%
+  pull(Genus) %>%
+  unique() %>%
+  toString()
+# Split the string into individual values
+genera_18S <- strsplit(genera_18S, ", ")[[1]]
+genera_18S <- c(genera_18S, "Below Threshold")
+
+library(randomcoloR)
+n <- 34
+palette <- distinctColorPalette(n)
+
+sample_order <- c("T0_Control", "T3_Control", "T5_Control", "T7_Control", "T0_Treatment", "T3_Treatment", "T5_Treatment", "T7_Treatment")
+```
+
+
+#### Bubble Plot
+```{r}
+sd1 <- psf_16S %>% 
+  tax_glom(taxrank = "Family") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, Combine)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+bub1 <- merge_samples(psf_16S, "Combine") 
+type_taxa1 <- bub1 %>% 
+  tax_glom(taxrank = "Family") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+type_taxa1 <- type_taxa1 %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+library(data.table)
+dat1 <- data.table(type_taxa1)
+dat1$SD <- sd1$sd
+dat1$Family <- as.character(dat1$Family)
+dat1[, median := median(Abundance, na.rm = FALSE), 
+    by = "Family"]
+dat1[(median <= 0.25), Family := "Below Threshold"]
+dat1[(Family == "Below Threshold"), Phylum := "Other"]
+my_title1 <- expression(paste("Microbial Genera within ", italic("O. faveolata")))
+bubplot_16S <- ggplot(dat1[Abundance > 0], aes(x = factor(Sample, levels=sample_order), y = factor(Family, levels=family_16S))) + geom_point(aes(size = Abundance, fill=Phylum, color=Phylum), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs(x="Sample", y = "Prokaryotic Family", size = "Relative Abundance %", fill="Prokaryotic Phylum") + theme_bw() +
+  scale_fill_manual(values = palette) +
+  scale_color_manual(values = palette) + theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  ggtitle(label=my_title1, subtitle = "With median relative abundance above 0.25%") + geom_point(aes(size=Abundance+SD, fill = Phylum, color=Phylum), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = Phylum, color=Phylum), alpha = 1, shape=21) + guides(color = FALSE, fill = guide_legend(override.aes = list(size = 3)))
+bubplot_16S
+
+sd1 <- psf_18S %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% 
+  psmelt() %>% group_by(OTU, Combine)  %>%
+  summarize(sd = sd(Abundance, na.rm=FALSE)) %>% arrange(OTU)
+bub1 <- merge_samples(psf_18S, "Combine") 
+type_taxa1 <- bub1 %>% 
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)*100} )  
+type_taxa1 <- type_taxa1 %>% 
+  psmelt() %>% 
+  arrange(OTU) 
+library(data.table)
+dat1 <- data.table(type_taxa1)
+dat1$SD <- sd1$sd
+dat1$Genus <- as.character(dat1$Genus)
+dat1[, median := median(Abundance, na.rm = FALSE), 
+    by = "Genus"]
+dat1[(median <= 0.05), Genus := "Below Threshold"]
+dat1[(Genus == "Below Threshold"), Division := "Other"]
+my_title1 <- expression(paste("Microbial Genera within ", italic("O. faveolata")))
+bubplot_18S <- ggplot(dat1[Abundance > 0], aes(x = factor(Sample, levels=sample_order), y = factor(Genus, levels=genera_18S))) + geom_point(aes(size = Abundance, fill=Division, color=Division), alpha = 0.5, shape = 21) + 
+  scale_size_continuous(limits = c(0.000001, 100), range = c(0.1,10), breaks = c(1,10,50,75)) + 
+  labs(x="Sample", y = "Eukaryotic Genus", size = "Relative Abundance %", fill="Eukaryotic Division") + theme_bw() +
+  scale_fill_manual(values = palette) +
+  scale_color_manual(values = palette) + theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=1)) + 
+  ggtitle(label=my_title1, subtitle = "With median relative abundance above 0.05%") + geom_point(aes(size=Abundance+SD, fill = Division, color=Division), alpha = 0.20, shape=21) + geom_point(aes(size=Abundance-SD, fill = Division, color=Division), alpha = 1, shape=21) + guides(color = FALSE, fill = guide_legend(override.aes = list(size = 3)))
+bubplot_18S
+
+library("ggpubr")
+bubplot_16S_x <- bubplot_16S + theme(axis.title.x = element_blank(),axis.text.x = element_blank())
+
+p <- ggarrange(bubplot_16S_x, bubplot_18S, nrow=2, heights=c(0.4,0.2), align="v", common.legend = FALSE, legend="right")
+p
+
+pdf("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/bubble2.pdf", width=10, height=10)
+plot(p)
+dev.off()
+```
+
+## ANCOMS w/ Volcano Plot
+- I am going to subset so that it's just a pairwise comparison of each time point treatment against all the controls.
+```{r, trend analysis amongst treatments}
+library(ANCOMBC)
+library(tidyverse)
+library(DT)
+
+psf_16S_treatments <- subset_samples(psf_16S, psf_16S@sam_data$Treament=='Control'|psf_16S@sam_data$Timepoint=='T3')
+output_combined = ancombc2(data = psf_16S_treatments, assay_name = "counts", tax_level = "Genus",
+                  fix_formula = "Treament", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.01, lib_cut = 0, s0_perc = 0.05,
+                  group = "Treament", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = F, pairwise = T, dunnet = F, trend = F,
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100))
+res = output_combined$res
+res
+res$taxon <- gsub("_X+", " IS", res$taxon)
+res$neg_log10_p_value <- -log10(res$q_TreamentHeat)
+significance_threshold <- -log10(0.05)
+ancom_volcano <- ggplot(res, aes(x = lfc_TreamentHeat, y = neg_log10_p_value)) +
+  geom_point(color = 'gray') +
+  geom_point(data = filter(res, neg_log10_p_value > significance_threshold), 
+             color = 'red', size = 3) +
+  geom_text(data = filter(res, neg_log10_p_value > significance_threshold), 
+            aes(label = taxon), hjust = 0, vjust = 0) +
+  labs(x = 'Log2 Fold Change', y = '-log10(adjusted p-value)',
+       title = 'ANCOM-BC2 Significant Genera: Mid-Bleach 1') +
+  theme_bw() +
+  xlim(c(-max(abs(res$lfc_TreamentHeat)), max(abs(res$lfc_TreamentHeat)))) + # Center x-axis at 0
+  ylim(c(0, 7))
+ancom_volcano
+write.csv(res, file="/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/ancom_T3_16S.csv")
+#pdf("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/ancom_T3_16S.pdf", width=10, height=10)
+#plot(ancom_volcano)
+#dev.off()
+
+psf_16S_treatments <- subset_samples(psf_16S, psf_16S@sam_data$Treament=='Control'|psf_16S@sam_data$Timepoint=='T5')
+output_combined = ancombc2(data = psf_16S_treatments, assay_name = "counts", tax_level = "Genus",
+                  fix_formula = "Treament", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.01, lib_cut = 0, s0_perc = 0.05,
+                  group = "Treament", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = F, pairwise = T, dunnet = F, trend = F,
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100))
+res = output_combined$res
+res
+res$taxon <- gsub("_X+", " IS", res$taxon)
+res$neg_log10_p_value <- -log10(res$q_TreamentHeat)
+significance_threshold <- -log10(0.05)
+ancom_volcano <- ggplot(res, aes(x = lfc_TreamentHeat, y = neg_log10_p_value)) +
+  geom_point(color = 'gray') +
+  geom_point(data = filter(res, neg_log10_p_value > significance_threshold), 
+             color = 'red', size = 3) +
+  geom_text(data = filter(res, neg_log10_p_value > significance_threshold), 
+            aes(label = taxon), hjust = 0, vjust = 0) +
+  labs(x = 'Log2 Fold Change', y = '-log10(adjusted p-value)',
+       title = 'ANCOM-BC2 Significant Genera: Mid-Bleach 2') +
+  theme_bw() +
+  xlim(c(-max(abs(res$lfc_TreamentHeat)), max(abs(res$lfc_TreamentHeat)))) + # Center x-axis at 0
+  ylim(c(0, 7))
+ancom_volcano
+write.csv(res, file="/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/ancom_T5_16S.csv")
+#pdf("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/ancom_T5_16S.pdf", width=10, height=10)
+#plot(ancom_volcano)
+#dev.off()
+
+psf_16S_treatments <- subset_samples(psf_16S, psf_16S@sam_data$Treament=='Control'|psf_16S@sam_data$Timepoint=='T7')
+output_combined = ancombc2(data = psf_16S_treatments, assay_name = "counts", tax_level = "Genus",
+                  fix_formula = "Treament", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.01, lib_cut = 0, s0_perc = 0.05,
+                  group = "Treament", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = F, pairwise = T, dunnet = F, trend = F,
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100))
+res = output_combined$res
+res
+res$taxon <- gsub("_X+", " IS", res$taxon)
+res$neg_log10_p_value <- -log10(res$q_TreamentHeat)
+significance_threshold <- -log10(0.05)
+ancom_volcano <- ggplot(res, aes(x = lfc_TreamentHeat, y = neg_log10_p_value)) +
+  geom_point(color = 'gray') +
+  geom_point(data = filter(res, neg_log10_p_value > significance_threshold), 
+             color = 'red', size = 3) +
+  geom_text(data = filter(res, neg_log10_p_value > significance_threshold), 
+            aes(label = taxon), hjust = 0, vjust = 0) +
+  labs(x = 'Log2 Fold Change', y = '-log10(adjusted p-value)',
+       title = 'ANCOM-BC2 Significant Genera: Fully Bleached') +
+  theme_bw() +
+  xlim(c(-max(abs(res$lfc_TreamentHeat)), max(abs(res$lfc_TreamentHeat)))) + # Center x-axis at 0
+  ylim(c(0, 7))
+ancom_volcano
+write.csv(res, file="/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/ancom_T7_16S.csv")
+#pdf("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/ancom_T7_16S.pdf", width=10, height=10)
+#plot(ancom_volcano)
+#dev.off()
+
+psf_18S_treatments <- subset_samples(psf_18S, psf_18S@sam_data$Treament=='Control'|psf_18S@sam_data$Timepoint=='T3')
+output_combined = ancombc2(data = psf_18S_treatments, assay_name = "counts", tax_level = "Genus",
+                  fix_formula = "Treament", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.01, lib_cut = 0, s0_perc = 0.05,
+                  group = "Treament", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = F, pairwise = T, dunnet = F, trend = F,
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100))
+res = output_combined$res
+res
+res$taxon <- gsub("_X+", " IS", res$taxon)
+res$neg_log10_p_value <- -log10(res$q_TreamentHeat)
+significance_threshold <- -log10(0.05)
+ancom_volcano <- ggplot(res, aes(x = lfc_TreamentHeat, y = neg_log10_p_value)) +
+  geom_point(color = 'gray') +
+  geom_point(data = filter(res, neg_log10_p_value > significance_threshold), 
+             color = 'red', size = 3) +
+  geom_text(data = filter(res, neg_log10_p_value > significance_threshold), 
+            aes(label = taxon), hjust = 0, vjust = 0) +
+  labs(x = 'Log2 Fold Change', y = '-log10(adjusted p-value)',
+       title = 'ANCOM-BC2 Significant Genera: Mid-Bleach 1') +
+  theme_bw() +
+  xlim(c(-max(abs(res$lfc_TreamentHeat)), max(abs(res$lfc_TreamentHeat)))) + # Center x-axis at 0
+  ylim(c(0, 7))
+ancom_volcano
+write.csv(res, file="/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/ancom_T3_18S.csv")
+#pdf("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/ancom_T3_18S.pdf", width=10, height=10)
+#plot(ancom_volcano)
+#dev.off()
+
+psf_18S_treatments <- subset_samples(psf_18S, psf_18S@sam_data$Treament=='Control'|psf_18S@sam_data$Timepoint=='T5')
+output_combined = ancombc2(data = psf_18S_treatments, assay_name = "counts", tax_level = "Genus",
+                  fix_formula = "Treament", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.01, lib_cut = 0, s0_perc = 0.05,
+                  group = "Treament", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = F, pairwise = T, dunnet = F, trend = F,
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100))
+res = output_combined$res
+res
+res$taxon <- gsub("_X+", " IS", res$taxon)
+res$neg_log10_p_value <- -log10(res$q_TreamentHeat)
+significance_threshold <- -log10(0.05)
+ancom_volcano <- ggplot(res, aes(x = lfc_TreamentHeat, y = neg_log10_p_value)) +
+  geom_point(color = 'gray') +
+  geom_point(data = filter(res, neg_log10_p_value > significance_threshold), 
+             color = 'red', size = 3) +
+  geom_text(data = filter(res, neg_log10_p_value > significance_threshold), 
+            aes(label = taxon), hjust = 0, vjust = 0) +
+  labs(x = 'Log2 Fold Change', y = '-log10(adjusted p-value)',
+       title = 'ANCOM-BC2 Significant Genera: Mid-Bleach 2') +
+  theme_bw() +
+  xlim(c(-max(abs(res$lfc_TreamentHeat)), max(abs(res$lfc_TreamentHeat)))) + # Center x-axis at 0
+  ylim(c(0, 7))
+ancom_volcano
+write.csv(res, file="/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/ancom_T5_18S.csv")
+#pdf("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/ancom_T5_18S.pdf", width=10, height=10)
+#plot(ancom_volcano)
+#dev.off()
+
+psf_18S_treatments <- subset_samples(psf_18S, psf_18S@sam_data$Treament=='Control'|psf_18S@sam_data$Timepoint=='T7')
+output_combined = ancombc2(data = psf_18S_treatments, assay_name = "counts", tax_level = "Genus",
+                  fix_formula = "Treament", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.01, lib_cut = 0, s0_perc = 0.05,
+                  group = "Treament", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = F, pairwise = T, dunnet = F, trend = F,
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100))
+res = output_combined$res
+res
+res$taxon <- gsub("_X+", " IS", res$taxon)
+res$neg_log10_p_value <- -log10(res$q_TreamentHeat)
+significance_threshold <- -log10(0.05)
+ancom_volcano <- ggplot(res, aes(x = lfc_TreamentHeat, y = neg_log10_p_value)) +
+  geom_point(color = 'gray') +
+  geom_point(data = filter(res, neg_log10_p_value > significance_threshold), 
+             color = 'red', size = 3) +
+  geom_text(data = filter(res, neg_log10_p_value > significance_threshold), 
+            aes(label = taxon), hjust = 0, vjust = 0) +
+  labs(x = 'Log2 Fold Change', y = '-log10(adjusted p-value)',
+       title = 'ANCOM-BC2 Significant Genera: Fully Bleached') +
+  theme_bw() +
+  xlim(c(-max(abs(res$lfc_TreamentHeat)), max(abs(res$lfc_TreamentHeat)))) + # Center x-axis at 0
+  ylim(c(0, 7))
+ancom_volcano
+write.csv(res, file="/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/ancom_T7_18S.csv")
+#pdf("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/ancom_T7_18S.pdf", width=10, height=10)
+#plot(ancom_volcano)
+#dev.off()
+```
+### Make EPA-placed tree for top 5 Durusinium & top 5 Breviolum ASVs across timepoints (similar to Pcla 2023)
+```{bash}
+cd /Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/tree
+
+hmmalign -o symbiont_epa_alignment.sto --dna --mapali tree4_operons_longpr2_and_shortpr2/tree4.aligned.fa suessiales.hmm Symbiont_ASVs.fa
+
+perl ~/Desktop/scripts/stockholm2fasta.pl symbiont_epa_alignment.sto > symbiont_epa_alignment.fa
+awk '/^>/ {print; next} {gsub("\\.", "-"); print}' symbiont_epa_alignment.fa > symbiont_epa_alignment.cleaned.fa
+
+raxmlHPC-PTHREADS -T 4 -m GTRCAT -f v -G 0.2 -n symbionts_epa -s symbiont_epa_alignment.cleaned.fa -t tree4_operons_longpr2_and_shortpr2/RAxML_bipartitions.tree4.tre
+
+sed 's/QUERY___//g' RAxML_labelledTree.symbionts_epa | sed 's/\[I[0-9]*\]//g' > RAxML_placement_tree_symbionts_epa.tre
+```
+```{r}
+library(ape)
+library(tidyverse)
+library(phylotools)
+library(ggtree)
+psf_18S <- readRDS("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/psf_18S.rds")
+treatments <- subset_samples(psf_18S, psf_18S@sam_data$Treament!="Control")
+mergedGP <- treatments %>% merge_samples("Timepoint")
+ASVs <- read.delim("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/tree/Symbiont_ASVs.txt", header=FALSE)
+ASVs  <- ASVs  %>% pull(V1)
+my_subset <- subset(t(mergedGP@otu_table@.Data), rownames(t(mergedGP@otu_table@.Data)) %in% ASVs)
+my_subset1 <- phyloseq(otu_table(my_subset, taxa_are_rows=TRUE))
+mergedGP <- merge_phyloseq(my_subset1, mergedGP@tax_table, mergedGP@sam_data)
+mergedGP <- mergedGP %>%  transform_sample_counts(function(x) {x/sum(x)*100} )
+tr <- read.tree("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/tree/RAxML_placement_tree_symbionts_epa.tre")
+
+#Made TXT with annotated names plus all the ASVS
+new_tips <- read.delim("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/tree/anno.txt", header = TRUE)
+
+clade_tips <- c("KU197083.1.1580_U", "AY051092.1.1535_U", "EF419286.1.1694_U", "AJ271777.1.1573_U", "AJ271774.1.1575_U", "EF419284.1.1694_U", "AY051095.1.1530_U", "JN255736.1.1584_U", "JN255735.1.1597_U", "JN255742.1.1595_U", "JN255743.1.1596_U", "JN255740.1.1594_U", "JN255741.1.1595_U", "AJ271763.1.1574_U", "AY525019.1.1211_U", "AJ271767.1.1576_U", "AJ271769.1.1375_U", "AB030646.1.1595_U", "LT631058.1.1798_U", "AF260260.1.1594_U", "AY139192.1.1592_U", "AF271292.1.1602_U", "EF419290.1.1694_U", "AY336095.1.874_U", "EF419283.1.1691_U", "AB126928.1.1693_U", "AB126931.1.1695_U", "DQ838542_Durusdinium_sp", "AY630406.1.1282_U", "AY525027.1.1451_U", "DQ446036.1.630_U", "OP001622.1.1419_U", "AY336100.1.533_U", "MT150628.1.1507_U", "KC816672.1.745_U", "KY012762.1.1573_U", "KY012763.1.1563_U", "AY488089.1.1251_U", "ON982712.1.1027_U", "AY525021.1.1348_U", "AY525024.1.1413_U", "AY525023.1.1372_U", "AY525025.1.1504_U", "EF036539_Cladocopium_goreaui", "Cladocopium_goreaui.genome_Cgor.scaffold1282/4509340275", "AB016595.1.1792_U", "KC816639.1.1639_U", "KC816661.1.1657_U", "KC816631_Cladocopium_sp", "KC816642.1.1166_U", "KC816636.1.1184_U", "KC816656.1.906_U", "KC816638.1.1646_U", "KC816651.1.680_U", "KC816635.1.1673_U", "AF238258_Cladocopium_sp", "HM067611.1.1774_U", "HM067608.1.1789_U", "HM067613.1.1791_U", "AY525022.1.1080_U", "OP589713.1.1428_U", "OP589715.1.1439_U", "OP589709.1.1102_U", "OP589710.1.1442_U", "OP589711.1.1413_U", "OP589720.1.1444_U", "OP001624.1.1404_U", "OP589717.1.1405_U", "OP001626.1.1443_U", "OP589844.1.1448_U", "OP589718.1.1438_U", "U10893.1.1800_U", "AF182822.1.1783_U", "AB016594_Fugacium_sp", "LK934673_Fugacium_sp", "LT631083.1.1804_U", "AB055914.1.1532_U", "GA430613.1.1075_U", "GA448859.1.1120_U", "GA431083.1.1120_U", "GA421382.1.1122_U", "GA394810.1.1110_U", "GA446649.1.1067_U", "GA425217.1.1117_U", "GA410003.1.1125_U", "GA399575.1.1176_U", "GA448321.1.1146_U", "GA440699.1.1115_U", "GA441836.1.1121_U", "GA423403.1.1129_U", "GA403224.1.1124_U", "GA442334.1.1118_U", "GA423528.1.1124_U", "GA408119.1.1077_U", "GA417589.1.1133_U", "Breviolum_minutum_Mf105b1_genomic_DF244368_1/23384_22467/22466_21494/21492_20065/30551_28618/28616_27214", "Breviolum_pseudominutum_SRR1795735.Trinity_Symbiodinium_pseudominutum_SRR1795735.g70543/3316036", "AB016722_Breviolum_sp", "Breviolum_aenigmaticum_SRR1795737.Trinity_Symbiodinium_aenigmaticum_SRR1795737.g36228/572216", "AF238257_Breviolum_sp", "HM227827.1.525_U", "AB016578.1.1792_U", "HF568830.1.3201_U", "OP001625.1.998_U", "AF174539.1.692_U", "KY012769.1.1560_U", "AB085914_Effrenium_sp", "AY165766.1.1803_U", "AF238261_Effrenium_sp", "AY051086.1.1605_U", "OP589722.1.1433_U", "KY012770.1.1547_U", "AF238262_Effrenium_sp", "AJ271770.1.1574_U", "AY139193.1.1593_U", "AF396619.1.1116_U", "OP001628.1.1421_U", "AF396622.1.639_U", "EF419282.1.1694_U", "EF419281.1.1694_U", "HE653238_Effrenium_voratum", "Effrenium_voratum_CNUM.Trinity_Symbiodinium_voratum_CNUM.g55656/3026030", "GU362425_Effrenium_sp", "Effrenium_voratum_CNUM.Trinity_Symbiodinium_voratum_CNUM.g55657/3026076", "L13717_Symbiodinium_corculorum", "L13718_Symbiodinium_meandrinae", "X62650_Symbiodinium_pilosum", "GBSC01001878.104.1407_U", "GBSC01001982.104.1447_U", "U10892.1.1788_U", "M88521_Symbiodinium_microadriaticum", "AY525020.1.1546_U", "AY525018.1.1438_U", "KU188508.1.1590_U", "AY525026.1.1314_U", "MH660722.1.1595_U", "AY336097.1.799_U", "Symbiodinium_linucheae_CCMP2456.genome_Slin_CCMP2456.scaffold752/2218416495", "AF238256_Symbiodinium_sp", "AJ271758.1.1572_U", "AJ271756.1.1572_U", "HM042374.1.892_U", "EU035778.1.687_U", "OP001623.1.1425_U", "AF379641.1.1693_U", "AY628354.1.822_U", "MZ503278_Alveolata_Dinoflagellata_Dinophyceae_Suessiales_Symbiodiniaceae_Symbiodinium__nonEcM_INSD23", "AY628347.1.822_U", "MF084992.1.1489_U", "MZ621018.1.1589_U", "18S_ASV_3", "18S_ASV_6", "18S_ASV_7", "18S_ASV_10", "18S_ASV_12", "18S_ASV_5", "18S_ASV_9", "18S_ASV_24", "18S_ASV_27", "18S_ASV_34")
+
+# Specify the tip labels in the clade
+tr <- drop.tip(tr, tr$tip.label[!tr$tip.label %in% clade_tips])
+tr <- sub.taxa.label(tr, new_tips)
+#tr <- extract.clade(tr, node = 620)
+#tr <- drop.tip(tr, c("KT806396_Outgroup", "KT806398_Outgroup", "GU825688_Outgroup", NA), trim.internal = TRUE)
+#tr<- root(tr, outgroup ="KF579890_Corallicolidae_COR6_sp.")
+spec <- tax_table(mergedGP) %>% data.frame(stringsAsFactors = FALSE) %>% tibble::rownames_to_column("otu")
+p <- ggtree(tr, branch.length = "y", scale=0.09, linesize=.5) %<+% spec
+x <- as.tibble(tr)
+p <- scaleClade(p, 167, .05) %>%
+  scaleClade(294, .05) %>%
+  scaleClade(163, .05) %>%
+  ggtree::collapse(167, 'mix', fill="darkgreen") %>%  
+  ggtree::collapse(294, 'mixed', fill='darkblue') %>%
+  ggtree::collapse(163, 'mixed', fill='darkviolet')
+
+#flip node 74
+#p <- flip(p, 76, 75)
+
+gd <- p$data
+melt_data<- psmelt(mergedGP)
+ordered = c("T0", "T3", "T5", "T7")
+tt <- melt_data %>% left_join(select(gd,OTU=label,x,y),by="OTU") %>%
+  arrange(factor(Sample, levels=ordered)) %>%  mutate(sample2=factor(Sample,levels=unique(Sample)),
+  col=as.numeric(sample2),x.col=scales::rescale(col,to=c(1.13,1.3)))
+
+##Changing heatmap
+g <- p + geom_tiplab(size = 4, align=TRUE, linesize=.5, hjust="left", offset = 0.1)  + geom_treescale(x=0.9, y=-0.9, fontsize = 2.5) + 
+  geom_tile(data=tt,aes(x=x.col,y=y,fill=Abundance)) + 
+  theme(legend.position="right", plot.title = element_text(size = 15, face = "bold", hjust = 0.5), legend.title=element_text(size=10, face="bold"), legend.text=element_text(size=8)) +
+  labs(fill="Relative Abundance") + scale_fill_gradient2(low="transparent", high = "#3182bd", mid= "#deebf7",midpoint= 5,limits=c(0.0001, 100), na.value="transparent")
+
+g
+
+pdf("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/figures/tree/Symbiont_epa_tree.pdf", width=12, height=15)
+plot(g)
+dev.off()
+```
+### Make JUST ASV tree for top 10 Durusinium & top 10 Breviolum ASVs across timepoints (similar to Pcla 2023)
+```{r}
+library(ape)
+library(tidyverse)
+library(phylotools)
+library(ggtree)
+psf_18S <- readRDS("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/psf_18S.rds")
+treatments <- subset_samples(psf_18S, psf_18S@sam_data$Treament!="Control")
+mergedGP <- treatments %>% merge_samples("Timepoint")
+ASVs <- read.delim("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/symbiont_tree/tree_ASVs.txt", header=FALSE)
+ASVs  <- ASVs  %>% pull(V1)
+my_subset <- subset(t(mergedGP@otu_table@.Data), rownames(t(mergedGP@otu_table@.Data)) %in% ASVs)
+my_subset1 <- phyloseq(otu_table(my_subset, taxa_are_rows=TRUE))
+mergedGP <- merge_phyloseq(my_subset1, mergedGP@tax_table, mergedGP@sam_data)
+mergedGP <- mergedGP %>%  transform_sample_counts(function(x) {x/sum(x)*100} )
+tr <- read.tree("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/symbiont_tree/RAxML_bipartitions.symbiont.tre")
+
+#Made TXT with annotated names plus all the ASVS
+new_tips <- read.delim("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/symbiont_tree/anno.txt", header = TRUE)
+
+#tr <- extract.clade(tr, node = 620)
+#tr <- drop.tip(tr, c("KT806396_Outgroup", "KT806398_Outgroup", "GU825688_Outgroup", NA), trim.internal = TRUE)
+tr<- root(tr, outgroup ="GQ375263_Polarella_glacialis")
+tr <- sub.taxa.label(tr, new_tips)
+spec <- tax_table(mergedGP) %>% data.frame(stringsAsFactors = FALSE) %>% tibble::rownames_to_column("otu")
+p <- ggtree(tr, branch.length = "y", scale=0.09, linesize=.5) %<+% spec
+x <- as.tibble(tr)
+
+#flip node 74
+#p <- flip(p, 76, 75)
+
+gd <- p$data
+melt_data<- psmelt(mergedGP)
+ordered = c("T0", "T3", "T5", "T7")
+tt <- melt_data %>% left_join(select(gd,OTU=label,x,y),by="OTU") %>%
+  arrange(factor(Sample, levels=ordered)) %>%  mutate(sample2=factor(Sample,levels=unique(Sample)),
+  col=as.numeric(sample2),x.col=scales::rescale(col,to=c(1.13,1.3)))
+
+##Changing heatmap
+g <- p + geom_tiplab(size = 4, align=TRUE, linesize=.5, hjust="left", offset = 0.1)  + geom_treescale(x=0.9, y=-0.9, fontsize = 2.5) + 
+  geom_tile(data=tt,aes(x=x.col,y=y,fill=Abundance)) + 
+  theme(legend.position="right", plot.title = element_text(size = 15, face = "bold", hjust = 0.5), legend.title=element_text(size=10, face="bold"), legend.text=element_text(size=8)) +
+  labs(fill="Relative Abundance") + scale_fill_gradient2(low="transparent", high = "#94c2e3", mid= "#94c2e3",midpoint= 40,limits=c(0.0001, 100), na.value="transparent")
+
+g
+
+pdf("/Users/anthonybonacolta/Library/CloudStorage/GoogleDrive-amb195@miami.edu/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/microbiome/analysis/symbiont_tree/Symbiont_ASV_tree2.pdf", width=10, height=7)
+plot(g)
+dev.off()
+```
+
+
+
+
+# RNA-Seq (de-seq2) https://bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#transcript-abundance-files-and-tximport-tximeta
+```{r}
+library(DESeq2)
+readpergene_sample1 <- read.table("/Volumes/projects/bonacolta/sc_ofav/Ofav_Exp_Spring2022/controls/STAR_mapping/T0C_ReadsPerGene.out.tab", header = FALSE, sep = "\t", skip = 4)
+readpergene_sample1 <- readpergene_sample1[, c(1, 4)]
+colnames(readpergene_sample1) <- c("Gene", "T0C")
+readpergene_sample2 <- read.table("/Volumes/projects/bonacolta/sc_ofav/Ofav_Exp_Spring2022/controls/STAR_mapping/T3C_ReadsPerGene.out.tab", header = FALSE, sep = "\t", skip = 4)
+readpergene_sample2 <- readpergene_sample2[, c(1, 4)]
+colnames(readpergene_sample2) <- c("Gene", "T3C")
+readpergene_sample3 <- read.table("/Volumes/projects/bonacolta/sc_ofav/Ofav_Exp_Spring2022/controls/STAR_mapping/T5C_ReadsPerGene.out.tab", header = FALSE, sep = "\t", skip = 4)
+readpergene_sample3 <- readpergene_sample3[, c(1, 4)]
+colnames(readpergene_sample3) <- c("Gene", "T5C")
+readpergene_sample4 <- read.table("/Volumes/projects/bonacolta/sc_ofav/Ofav_Exp_Spring2022/controls/STAR_mapping/T7C_ReadsPerGene.out.tab", header = FALSE, sep = "\t", skip = 4)
+readpergene_sample4 <- readpergene_sample4[, c(1, 4)]
+colnames(readpergene_sample4) <- c("Gene", "T7C")
+# Repeat for other samples
+# Combine all Readpergene tables into a single data frame
+all_readpergene <- cbind(readpergene_sample1, readpergene_sample2, readpergene_sample3, readpergene_sample4)
+all_readpergene <- all_readpergene[, c(1, 2, 4, 6, 8)]
+rownames(all_readpergene) <- all_readpergene$Gene
+all_readpergene <- all_readpergene[, -1]
+
+# Calculate library sizes (total counts) for each sample
+library_sizes <- colSums(all_readpergene)
+# Calculate scaling factors
+scaling_factors <- mean(library_sizes) / library_sizes
+
+# Normalize the count data
+normalized_count_data <- t(t(all_readpergene) / scaling_factors)
+# Remove rows with all zero counts
+normalized_count_data <- normalized_count_data[rowSums(normalized_count_data) > 0, ]
+# Perform a t-test for each gene
+gene_p_values <- apply(normalized_count_data, 1, function(x) t.test(x)$p.value)
+
+gene_p_values_df <- data.frame(Gene = names(gene_p_values), gene_p_values = gene_p_values)
+# Adjust p-values for multiple testing (optional but recommended)
+# You can use methods like Bonferroni correction, Benjamini-Hochberg procedure, etc.
+adjusted_p_values <- p.adjust(gene_p_values, method = "fdr")
+print(adjusted_p_values)
+
+adjusted_p_values_df <- data.frame(Gene = names(adjusted_p_values), Adjusted_p_value = adjusted_p_values)
+
+# Output the adjusted p-values table
+print(adjusted_p_values_df)
+```
+
+## Make Heat-map of Control Genes
+```{r}
+genes_to_use <- c("QW917_005606",
+"QW917_036332",
+"QW917_036331",
+"QW917_027542",
+"QW917_017111",
+"QW917_025432",
+"QW917_030986",
+"QW917_008447",
+"symbB.v1.2.040993",
+"QW917_026433",
+"QW917_010131",
+"QW917_016488",
+"QW917_023065",
+"QW917_003749",
+"QW917_001602",
+"QW917_017006",
+"QW917_031733",
+"QW917_017942",
+"QW917_026114",
+"QW917_008288",
+"QW917_003971",
+"QW917_010145",
+"QW917_035634",
+"QW917_004231",
+"QW917_024491",
+"QW917_030646",
+"QW917_013386",
+"QW917_016878",
+"QW917_016501",
+"QW917_016496",
+"QW917_006349",
+"QW917_025130",
+"QW917_005894",
+"QW917_024580",
+"QW917_018150",
+"QW917_008368",
+"QW917_033275",
+"QW917_018353",
+"QW917_004807",
+"QW917_016495",
+"QW917_002688",
+"QW917_002686",
+"QW917_018169",
+"QW917_003080",
+"QW917_026774",
+"QW917_027013",
+"QW917_018090",
+"QW917_024689",
+"QW917_009174",
+"QW917_004830",
+"QW917_005962",
+"QW917_008044",
+"QW917_014249",
+"QW917_028245",
+"QW917_032073",
+"QW917_016859")
+
+subset_data <- normalized_count_data[row.names(normalized_count_data) %in% genes_to_use, ]
+min_val <- -2
+max_val <- 2
+min_max_scaled_data <- apply(subset_data, 2, function(x) {
+  min_max_scaled <- (x - min(x)) / (max(x) - min(x))
+  scaled <- min_val + min_max_scaled * (max_val - min_val)
+  return(scaled)
+})
+
+scaled_data <- min_max_scaled_data
+
+# Generate a heatmap using heatmap function
+genes_to_user_reverse <- genes_to_use
+scaled_data_ordered <- scaled_data[genes_to_user_reverse, ]
+
+library(ComplexHeatmap)
+# Define the color gradient for the heatmap
+gradient_colors <- c("blue", "#fffff2", "red")
+col_fun <- colorRampPalette(gradient_colors)(256)
+# Create a Heatmap object
+heatmap_object <- Heatmap(scaled_data_ordered,
+                          name = "Gene Expression",
+                          col = col_fun,
+                          show_row_names = TRUE,  # Show gene names on the left
+                          row_names_gp = gpar(fontsize = 8),  # Adjust the font size of gene names
+                          cluster_rows = FALSE,  # Do not cluster rows
+                          show_heatmap_legend = TRUE,
+                          column_order = c("T0C", "T3C", "T5C", "T7C"),
+                          row_names_side = "left")  # Show heatmap legend
+heatmap_object
+
+pdf("/Volumes/GoogleDrive/.shortcut-targets-by-id/1wkxSWfsOfMy-OsjBXEzK1bJHunl3Wvv_/AnthonyOfav/seurat/figures/controls_hm.pdf", width=7, height=7)
+plot(heatmap_object)
+dev.off()
+```
+
+
+## May be useful
+### Trend test ANCOM
+```{r}
+output_combined = ancombc2(data = psf_16S_treatments, assay_name = "counts", tax_level = "Genus",
+                  fix_formula = "Treament", rand_formula = NULL,
+                  p_adj_method = "fdr", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.01, lib_cut = 0, s0_perc = 0.05,
+                  group = "Timepoint", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 2, verbose = TRUE,
+                  global = F, pairwise = F, dunnet = F, trend = TRUE,
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "fdr", B = 100),
+                  trend_control = list(contrast = list(matrix(c(1, 0, 0,-1, 1, 0, 0, -1, 1),nrow = 3, byrow = TRUE)), node=1,solver = "ECOS",B = 100))
+```
+
+

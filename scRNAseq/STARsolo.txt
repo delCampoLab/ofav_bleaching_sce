@@ -1,0 +1,98 @@
+## 1. Create a custom STAR Reference for Mapping
+- Use STAR version=2.7.10a
+- Download all reference fastas and corresponding GTFs desired. If you need to convert a gff file to gtf use:
+```
+gffread INPUT_FILE.gff -T -o OUTPUT_FILE.gtf
+```
+- Combine all GTF files using the ``cat`` command
+- Run a script like below on the super-computer
+- Note that the value for `--sjdbOverhang` should be the legnth of your reads MINUS 1
+```
+#!/bin/bash
+
+#BSUB -J STAR
+#BSUB -q normal
+#BSUB -n 25
+#BSUB -W 168:00
+#BSUB -u amb195@miami.edu
+#BSUB -o /home/amb195/STAR_refs/logs/star.out
+#BSUB -e /home/amb195/STAR_refs/logs/star.err
+
+###################################################################
+
+cd /home/amb195/STAR_refs/raw_refs
+
+STAR --version
+
+STAR --runMode genomeGenerate --runThreadN 25 \
+--genomeDir /home/amb195/STAR_refs/built/Ofav_dur_cla_bre_Eten_99 \
+--genomeFastaFiles Ofav_2017.fna durusdinium.fa cladocopium.fa breviolum.fa E_tenella.fa \
+--sjdbGTFfile /home/amb195/STAR_refs/raw_refs/Ofav_dur_cla_bre_Eten.gtf  --limitSjdbInsertNsj=2000000 \
+--limitGenomeGenerateRAM=163512951169 --sjdbOverhang=99
+```
+
+## 2. Trim your reads of low quality sequences and make sure your UMI+CB file (typically R1) is trimmed of any poly-T or N's. You UMI+CB for 10x Genomics 3v3 Chemistry should be 28 bp. An example using trim_galore is below:
+```
+#!/bin/bash
+
+#BSUB -J trim_scRNAseq
+#BSUB -q normal
+#BSUB -n 16
+#BSUB -W 168:00
+#BSUB -u amb195@miami.edu
+#BSUB -o trim_scRNAseq.out
+#BSUB -e trim_scRNAseq.err
+
+###################################################################
+
+ml StdEnv
+ml anaconda2/2019.07
+
+conda activate trimming
+
+cd /scratch/marinemicrobes_t/sc_seq/data
+
+trim_galore DelCampo-20220414-T0T-GEX-3v3-1-20220506_S23_L001_R1_001.fastq --hardtrim5 28 -j 4
+
+trim_galore DelCampo-20220414-T0T-GEX-3v3-1-20220506_S23_L002_R1_001.fastq --hardtrim5 28 -j 4
+
+trim_galore DelCampo-20220414-T0T-GEX-3v3-1-20220506_S23_L003_R1_001.fastq --hardtrim5 28 -j 4
+
+trim_galore DelCampo-20220414-T0T-GEX-3v3-1-20220506_S23_L004_R1_001.fastq --hardtrim5 28 -j 4
+
+trim_galore --paired --length 28 -j 4 DelCampo-20220414-T0T-GEX-3v3-1-20220506_S23_L001_R1_001.28bp_5prime.fq DelCampo-20220414-T0T-GEX-3v3-1-20220506_S23_L001_R2_001.fastq
+
+trim_galore --paired --length 28 -j 4 DelCampo-20220414-T0T-GEX-3v3-1-20220506_S23_L002_R1_001.28bp_5prime.fq DelCampo-20220414-T0T-GEX-3v3-1-20220506_S23_L002_R2_001.fastq
+
+trim_galore --paired --length 28 -j 4 DelCampo-20220414-T0T-GEX-3v3-1-20220506_S23_L003_R1_001.28bp_5prime.fq DelCampo-20220414-T0T-GEX-3v3-1-20220506_S23_L003_R2_001.fastq
+
+trim_galore --paired --length 28 -j 4 DelCampo-20220414-T0T-GEX-3v3-1-20220506_S23_L004_R1_001.28bp_5prime.fq DelCampo-20220414-T0T-GEX-3v3-1-20220506_S23_L004_R2_001.fastq
+
+```
+
+## 3. Run [STARsolo](https://github.com/alexdobin/STAR/blob/master/docs/STARsolo.md)
+```
+#!/bin/bash
+#BSUB -J STARsolo
+#BSUB -e SS.err
+#BSUB -o SS.out
+#BSUB -q normal
+#BSUB -n 50
+#BSUB -W 168:00
+#BSUB -B
+#BSUB -N
+#BSUB -u amb195@miami.edu
+
+cd /scratch/marinemicrobes_t/sc_seq/data/
+
+STAR --version
+
+STAR --soloType CB_UMI_Simple --genomeDir /scratch/marinemicrobes_t/sc_seq/Ofav_dur_cla_bre_eten_ostr_200 --readFilesIn DelCampo-20220414-T0T-GEX-3v3-1-20220506_S23_L001_R2_001_val_2.fq,DelCampo-20220414-T0T-GEX-3v3-1-20220506_S23_L002_R2_001_val_2.fq,DelCampo-20220414-T0T-GEX-3v3-1-20220506_S23_L003_R2_001_val_2.fq,DelCampo-20220414-T0T-GEX-3v3-1-20220506_S23_L004_R2_001_val_2.fq DelCampo-20220414-T0T-GEX-3v3-1-20220506_S23_L001_R1_001.28bp_5prime_val_1.fq,DelCampo-20220414-T0T-GEX-3v3-1-20220506_S23_L002_R1_001.28bp_5prime_val_1.fq,DelCampo-20220414-T0T-GEX-3v3-1-20220506_S23_L003_R1_001.28bp_5prime_val_1.fq,DelCampo-20220414-T0T-GEX-3v3-1-20220506_S23_L004_R1_001.28bp_5prime_val_1.fq --soloUMIlen 12 --soloCBstart 1 --soloCBlen 16 --soloUMIstart 17 --soloCBwhitelist /scratch/marinemicrobes_t/sc_seq/3M-february-2018.txt --soloCBmatchWLtype 1MM_multi_Nbase_pseudocounts --soloCellFilter EmptyDrops_CR 10000 0.99 100 45000 90000 100 0.01 20000 0.01 10000 --soloFeatures Gene GeneFull --soloMultiMappers EM --runThreadN 50 --outFilterScoreMinOverLread 0.3 --outFilterMatchNminOverLread 0.3 --outFilterMatchNmin 0 --outFilterMismatchNmax 4
+```
+
+## 4. Load the data into R using Seurat and process:
+```
+setwd("/Volumes/projects/bonacolta/sc_ofav/Ofav_Exp_Spring2022/T0-T/analysis/Solo.99.out/Gene")
+ofav.data <- ReadSTARsolo(data.dir = "raw_UM-EM")
+ofav <- CreateSeuratObject(counts = ofav.data, project = "ofav-T01-CR", min.cells = 3, min.features = 10)
+```
