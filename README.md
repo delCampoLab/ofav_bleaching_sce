@@ -1,2 +1,4 @@
-# Ofav_bleaching_SCE
-Code related to Bonacolta et al. Single Cell Ecology of Orbicella faveolata through bleaching
+# Single-cell Ecology of *Orbicella faveolata* during bleaching
+
+Code related to Bonacolta et al. Cell atlas of coral bleaching reveals symbiotic suppression of heat-stress genes
+
