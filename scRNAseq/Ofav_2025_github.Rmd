@@ -1,0 +1,2865 @@
+---
+title: "Ofav scRNAseq 2025"
+author: "Anthony M. Bonacolta"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Load in STARsolo Data
+##Libraries
+```{r}
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(viridis)
+library(ggplot2)
+library(Matrix)
+```
+## Time Point 0- Treatment Sample
+```{r}
+T0T.data <- ReadSTARsolo(data.dir = "~/Ofav_Exp_Spring2022/T0-T/analysis/newref.Solo.out/Gene/raw")
+T0T <- CreateSeuratObject(counts = T0T.data, project = "Ofav-T0-T", min.cells = 3, min.features = 10)
+nUMI_high <<- quantile(T0T@meta.data$nCount_RNA,0.99)
+T0T <- subset(T0T, subset = nCount_RNA > 200 & nCount_RNA < nUMI_high)
+T0T
+summary(colSums(T0T))
+rm(T0T.data)
+```
+## Time Point 3- Treatment Sample
+```{r}
+T3T.data <- ReadSTARsolo(data.dir = "~/Ofav_Exp_Spring2022/T3-T/analysis/newref.T3.Solo.out/Gene/raw")
+T3T <- CreateSeuratObject(counts = T3T.data, project = "Ofav-T3-T", min.cells = 3, min.features = 10)
+nUMI_high <<- quantile(T3T@meta.data$nCount_RNA,0.99)
+T3T <- subset(T3T, subset = nCount_RNA > 200 & nCount_RNA < nUMI_high)
+T3T
+summary(colSums(T3T))
+rm(T3T.data)
+```
+## Time Point 5- Treatment Sample
+```{r}
+T5T.data <- ReadSTARsolo(data.dir = "~/Ofav_Exp_Spring2022/T5-T/analysis/newref.T5.Solo.out/Gene/raw")
+T5T <- CreateSeuratObject(counts = T5T.data, project = "Ofav-T5-T", min.cells = 3, min.features = 10)
+nUMI_high <<- quantile(T5T@meta.data$nCount_RNA,0.99)
+T5T <- subset(T5T, subset = nCount_RNA > 200 & nCount_RNA < nUMI_high)
+summary(colSums(T5T))
+T5T
+rm(T5T.data)
+```
+## Time Point 7- Treatment Sample
+```{r}
+T7T.data <- ReadSTARsolo(data.dir = "~/Ofav_Exp_Spring2022/T7-T/analysis/newref.T7.Solo.out/Gene/raw")
+T7T <- CreateSeuratObject(counts = T7T.data, project = "Ofav-T7-T", min.cells = 3, min.features = 10)
+nUMI_high <<- quantile(T7T@meta.data$nCount_RNA,0.99)
+T7T
+T7T <- subset(T7T, subset = nCount_RNA > 200 & nCount_RNA < nUMI_high)
+summary(colSums(T7T))
+T7T
+rm(T7T.data)
+```
+## Log-normalize the data & find variable features independently
+```{r}
+T0T <- NormalizeData(T0T, normalization.method = "LogNormalize", scale.factor = 10000)
+T0T <- FindVariableFeatures(T0T, selection.method = "vst")
+T3T <- NormalizeData(T3T, normalization.method = "LogNormalize", scale.factor = 10000)
+T3T <- FindVariableFeatures(T3T, selection.method = "vst")
+T5T <- NormalizeData(T5T, normalization.method = "LogNormalize", scale.factor = 10000)
+T5T <- FindVariableFeatures(T5T, selection.method = "vst")
+T7T <- NormalizeData(T7T, normalization.method = "LogNormalize", scale.factor = 10000)
+T7T <- FindVariableFeatures(T7T, selection.method = "vst")
+```
+## Perform Integration
+```{r}
+features <- SelectIntegrationFeatures(object.list = c(T0T, T3T, T5T, T7T))
+ofav.anchors <- FindIntegrationAnchors(object.list = c(T0T, T3T, T5T, T7T), anchor.features = features)
+ofav.combined <- IntegrateData(anchorset = ofav.anchors)
+rm(T0T)
+rm(T3T)
+rm(T5T)
+rm(T7T)
+```
+## Viz and Cluster
+```{r}
+DefaultAssay(ofav.combined) <- "integrated"
+all.genes <- rownames(ofav.combined)
+ofav.combined<- ScaleData(ofav.combined, features = all.genes)
+ofav.combined<- RunPCA(ofav.combined, verbose = FALSE, npcs=20)
+ofav.combined <- JackStraw(ofav.combined, num.replicate = 100, dims = 50)
+ofav.combined <- ScoreJackStraw(ofav.combined, dims = 1:20)
+JackStrawPlot(ofav.combined, dims = 1:20)
+ElbowPlot(ofav.combined)
+# Looks like 20 is a good cutoff
+ofav.combined<- RunTSNE(ofav.combined, reduction = "pca", check_duplicates = FALSE, dims=1:20)
+ofav.combined<- RunUMAP(ofav.combined, dims=1:20)
+ofav.combined <- FindNeighbors(ofav.combined, dims = 1:20)
+ofav.combined<- FindClusters(ofav.combined, resolution=0.3, algorithm =1, group.singletons = F)
+UMAPPlot(ofav.combined)
+```
+
+# SAMap analysis to correlate cell types with Stylophora cell atlas
+## Load in Stylophora Data and convert to AnnData object
+```{r}
+library(Seurat)
+# Load the UMI counts
+umi_counts <- readRDS("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/SAMap_stylophora/Spis_adult_sc_UMI_counts.RDS")
+# Create a Seurat object
+stylophora_atlas <- CreateSeuratObject(counts = umi_counts)
+# Read the assignments
+assignments <- read.table("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/SAMap_stylophora/Spis_coral_cell_type_assignments.txt", 
+                          header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+# Ensure barcodes match exactly
+head(assignments$barcode)
+head(colnames(stylophora_atlas))
+# Convert Seurat object metadata to data frame
+meta <- stylophora_atlas@meta.data
+meta$cell <- rownames(meta)
+# Merge the metadata with assignments
+merged_meta <- merge(meta, assignments, by = "cell", all.x = TRUE)
+# Add cell type info back to the Seurat object
+stylophora_atlas$celltype <- merged_meta$cell_type[match(rownames(meta), merged_meta$cell)]
+library(SeuratDisk)
+# Save as an h5Seurat file
+test_obj <- stylophora_atlas
+# Clear potentially problematic slots
+test_obj@graphs <- list()
+test_obj@neighbors <- list()
+test_obj@reductions <- list()
+test_obj@images <- list()
+test_obj@misc <- list()
+test_obj@commands <- list()
+test_obj@tools <- list()
+DefaultAssay(test_obj) <- "RNA"
+SaveH5Seurat(test_obj, filename = "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/SAMap_stylophora/Spis_seurat.h5Seurat", overwrite = TRUE, verbose = TRUE)
+# Convert to h5ad
+Convert("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/SAMap_stylophora/Spis_seurat.h5Seurat", dest = "h5ad")
+```
+## Load in Ofav data and convert to AnnData object
+```{r}
+ofav.combined.labeled <- readRDS("~/Ofav_Exp_Spring2022/ofav.combined.labeled.rds")
+ofav.combined.labeled@graphs <- list()
+ofav.combined.labeled@neighbors <- list()
+ofav.combined.labeled@reductions <- list()
+ofav.combined.labeled@images <- list()
+ofav.combined.labeled@misc <- list()
+ofav.combined.labeled@commands <- list()
+ofav.combined.labeled@tools <- list()
+DefaultAssay(ofav.combined.labeled) <- "RNA"
+SaveH5Seurat(ofav.combined.labeled, filename = "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/SAMap_stylophora/ofav.combined.labeled.h5Seurat", overwrite = TRUE, verbose = TRUE)
+Convert("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/SAMap_stylophora/ofav.combined.labeled.h5Seurat", dest = "h5ad")
+```
+## Run reciprocal blast using map_genes.sh script here:
+```{bash}
+map_genes.sh --tr1 ofav.faa --t1 prot --n1 OF --tr2 spis.faa --t2 prot --n2 SP
+```
+
+## Run SAMap
+- Made sure gene names matched between the h5ad objects and the blast files
+- Make sure cell type information in stored in h5ad objects
+```{python}
+from samap.mapping import SAMAP
+from samap.analysis import (get_mapping_scores, GenePairFinder,
+                            sankey_plot, chord_plot, CellTypeTriangles, 
+                            ParalogSubstitutions, FunctionalEnrichment,
+                            convert_eggnog_to_homologs, GeneTriangles)
+from samalg import SAM
+import pandas as pd
+fn1 = 'ofav.combined.labeled.h5ad'
+fn2 = 'Spis_seurat.h5ad'
+filenames = {'OF':fn1,'SP':fn2}
+sm = SAMAP(
+        filenames,
+        f_maps = 'maps/',
+    )
+#sm.sams['OF'].adata.obs['seurat_clusters'].head()
+#sm.sams['SP'].adata.obs['celltype'].head()
+sm.run(pairwise=True)
+samap = sm.samap # SAM object with two species stitched together
+keys = {'OF':'seurat_clusters','SP':'celltype'}
+D,MappingTable = get_mapping_scores(sm,keys,n_top = 0)
+sankey_plot(MappingTable, align_thr=0.05, species_order = ['OF','SP'])
+chord_plot(MappingTable, align_thr=0.05)
+```
+## Plot in R
+```{r}
+library(readr)
+library(tidyverse)
+library(ggalluvial)
+df <- read.csv("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/SAMap_stylophora/MappingTable.csv", row.names = 1)
+# Filter rows and columns to just OF and SP
+df_OF <- df[grepl("^OF", rownames(df)), grepl("^SP", colnames(df))]
+
+# Convert to long format
+long_df <- df_OF %>%
+  rownames_to_column("OF") %>%
+  pivot_longer(cols = -OF, names_to = "SP", values_to = "value") %>%
+  filter(value > 0.05)  # Keep only positive connections
+
+sp_colors <- c(
+  "SP_unknown" = "azure2",
+  "SP_calicoblast" = "darkorchid4",
+  "SP_cnidocyte" = "plum1",
+  "SP_digestive_filaments" = "red1",
+  "SP_epidermis_1" = "seagreen1",
+  "SP_epidermis_2" = "seagreen1",
+  "SP_gastrodermis_musclelike" = "darkolivegreen4",
+  "SP_gastrodermis" = "darkolivegreen1",
+  # If second gastrodermis cluster exists, e.g. "SP_gastrodermis_2" = "darkolivegreen2",
+  "SP_gland_1" = "darkorange1",
+  "SP_gland_2" = "darkorange2",
+  "SP_gland_3_digestive" = "darkorange",
+  # You can add glands 4-10 similarly if needed:
+  "SP_gland_4" = "darkorange",
+  "SP_gland_5" = "darkorange",
+  "SP_gland_6" = "darkorange",
+  "SP_gland_7" = "darkorange",
+  "SP_gland_8" = "darkorange",
+  "SP_gland_9" = "darkorange",
+  "SP_gland_10" = "darkorange",
+  "SP_immune_1" = "darkkhaki",
+  "SP_immune_2" = "darkkhaki",
+  "SP_mitotic_host_cells" = "bisque3",
+  "SP_alga-hosting_cells" = "darkgoldenrod3",
+  # If you have "Extracellular Breviolum", use "darkgoldenrod1" etc.
+  
+  "SP_neuron_1" = "deepskyblue3",
+  "SP_neuron_2" = "deepskyblue3",
+  "SP_neuron_3" = "deepskyblue3",
+  "SP_neuron_4" = "deepskyblue4",
+  "SP_neuron_5" = "deepskyblue4",
+  "SP_neuron_6" = "deepskyblue4",
+  "SP_neuron_7" = "deepskyblue2",
+  "SP_neuron_8" = "deepskyblue2",
+  "SP_neuron_9" = "deepskyblue2",
+  "SP_neuron_10" = "deepskyblue2",
+  "SP_neuron_11" = "deepskyblue2",
+  "SP_neuron_12" = "deepskyblue2",
+  "SP_neuron_13" = "deepskyblue2",
+  "SP_neuron_14" = "deepskyblue2"
+)
+
+
+celltype_map <- ggplot(long_df,
+       aes(axis1 = SP, axis2 = OF, y = value)) +   # SP on left, OF on right
+  geom_alluvium(aes(fill = SP), width = 1/12) +  # color by SP
+  geom_stratum(width = 1/12, fill = "grey", color = "black") +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum)), size = 3) +
+  scale_x_discrete(limits = c("SP", "OF"), expand = c(.05, .05)) +  # update x axis order
+  labs(y = "Mapping Weight", x = "Species / Cell Type") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  scale_fill_manual(values = sp_colors)
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/SAMap_sankey_05.svg", celltype_map)
+
+long_df <- df_OF %>%
+  rownames_to_column("OF") %>%
+  pivot_longer(cols = -OF, names_to = "SP", values_to = "value") %>%
+  filter(value > 0.15)  # Keep only positive connections
+
+sp_colors <- c(
+  "SP_unknown" = "azure2",
+  "SP_calicoblast" = "darkorchid4",
+  "SP_cnidocyte" = "plum1",
+  "SP_digestive_filaments" = "red1",
+  "SP_epidermis_1" = "seagreen1",
+  "SP_epidermis_2" = "seagreen1",
+  "SP_gastrodermis_musclelike" = "darkolivegreen4",
+  "SP_gastrodermis" = "darkolivegreen1",
+  # If second gastrodermis cluster exists, e.g. "SP_gastrodermis_2" = "darkolivegreen2",
+  "SP_gland_1" = "darkorange1",
+  "SP_gland_2" = "darkorange2",
+  "SP_gland_3_digestive" = "darkorange",
+  # You can add glands 4-10 similarly if needed:
+  "SP_gland_4" = "darkorange",
+  "SP_gland_5" = "darkorange",
+  "SP_gland_6" = "darkorange",
+  "SP_gland_7" = "darkorange",
+  "SP_gland_8" = "darkorange",
+  "SP_gland_9" = "darkorange",
+  "SP_gland_10" = "darkorange",
+  "SP_immune_1" = "darkkhaki",
+  "SP_immune_2" = "darkkhaki",
+  "SP_mitotic_host_cells" = "bisque3",
+  "SP_alga-hosting_cells" = "darkgoldenrod3",
+  # If you have "Extracellular Breviolum", use "darkgoldenrod1" etc.
+  
+  "SP_neuron_1" = "deepskyblue3",
+  "SP_neuron_2" = "deepskyblue3",
+  "SP_neuron_3" = "deepskyblue3",
+  "SP_neuron_4" = "deepskyblue4",
+  "SP_neuron_5" = "deepskyblue4",
+  "SP_neuron_6" = "deepskyblue4",
+  "SP_neuron_7" = "deepskyblue2",
+  "SP_neuron_8" = "deepskyblue2",
+  "SP_neuron_9" = "deepskyblue2",
+  "SP_neuron_10" = "deepskyblue2",
+  "SP_neuron_11" = "deepskyblue2",
+  "SP_neuron_12" = "deepskyblue2",
+  "SP_neuron_13" = "deepskyblue2",
+  "SP_neuron_14" = "deepskyblue2"
+)
+
+celltype_map <- ggplot(long_df,
+       aes(axis1 = SP, axis2 = OF, y = value)) +   # SP on left, OF on right
+  geom_alluvium(aes(fill = SP), width = 1/12) +  # color by SP
+  geom_stratum(width = 1/12, fill = "grey", color = "black") +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum)), size = 3) +
+  scale_x_discrete(limits = c("SP", "OF"), expand = c(.05, .05)) +  # update x axis order
+  labs(y = "Mapping Weight", x = "Species / Cell Type") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  scale_fill_manual(values = sp_colors)
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/SAMap_sankey_15.svg", celltype_map)
+celltype_map
+```
+
+## Cell score table
+```{r}
+# Load tidyverse
+library(tidyverse)
+D_df <- read.csv("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/SAMap_stylophora/D.csv")
+# Example: Suppose your data frame is D
+# Get all the alignment score columns
+score_cols <- seq(2, ncol(D_df), by = 2)  # Alignment scores are in every second column
+# Extract the best match per row
+of_matches <- map_dfr(score_cols, function(i) {
+  cluster_col <- i - 1
+  score_col <- i
+
+  tibble(
+    OF_cluster = D_df[[cluster_col]],
+    SP_cluster = colnames(D_df)[cluster_col],
+    alignment_score = as.numeric(D_df[[score_col]])
+  )
+})
+
+# Remove NA matches
+of_matches <- of_matches %>% filter(!is.na(OF_cluster), !is.na(alignment_score))
+
+# Get the best SP match per OF cluster
+top_matches <- of_matches %>%
+  group_by(OF_cluster) %>%
+  slice_max(alignment_score, n = 1, with_ties = FALSE) %>%
+  arrange(OF_cluster)
+# View result
+print(top_matches)
+# save
+write_csv(top_matches, "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/SAMap_stylophora/OF_to_SP_top_alignment_matches.csv")
+```
+## Combine cell types
+```{r}
+of_matches <- of_matches %>%
+  mutate(SP_general = str_replace(SP_cluster, "_[0-9]+$", ""))
+
+# Combine scores (using sum here)
+combined_scores <- of_matches %>%
+  group_by(OF_cluster, SP_general) %>%
+  summarise(total_score = sum(alignment_score, na.rm = TRUE), .groups = "drop")
+
+top_general_matches <- combined_scores %>%
+  group_by(OF_cluster) %>%
+  slice_max(total_score, with_ties = FALSE) %>%
+  arrange(OF_cluster)
+
+write_csv(top_general_matches, "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/SAMap_stylophora/OF_to_SP_general_celltype_matches.csv")
+```
+
+## Generate matching score
+```{r}
+library(dplyr)
+library(stringr)
+total_scores_per_OF <- df %>%
+  group_by(OF_cluster) %>%
+  summarise(total_alignment_score = sum(alignment_score, na.rm = TRUE), .groups = "drop")
+matching_scores <- top_general_matches %>%
+  left_join(total_scores_per_OF, by = "OF_cluster") %>%
+  mutate(matching_score = total_score / total_alignment_score)
+print(matching_scores)
+write.csv(matching_scores, "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/SAMap_stylophora/matching_scores_by_OF_and_SPgeneral.csv", row.names = FALSE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Assign cell types based on SAMap results
+```{r}
+ofav.combined.labeled <- RenameIdents(ofav.combined.labeled, "Unidentified"="Gastrodermis_1", "Calicoblastic Cells"="Calicoblastic Cells", "Cnidocytes"="Cnidocytes", "Digestive Filaments"="Gland_3", "Epidermis"="Epidermis", "Gastrodermis (Muscle-like)"="Gastrodermis_3", "Gastrodermis 1"="Neurons_1", "Gastrodermis 2"="Gastrodermis (Algal-hosting cells)", "Gland 1"="Gland_1", "Gland 2"="Gland_2", "Gland 3"="Gastrodermis_4", "Immune"="Gastrodermis_2", "Neurons 1"="Neurons_2", "Neurons 2"="Germline (sperm)", "Neurons 3"="Neurons_3", "Precursors"="Immune", "Extracellular Breviolum"="Extracellular Breviolum", "Breviolum-hosting Cells"="Breviolum-hosting Cells", "Durusdinium-hosting Cells"=	"Durusdinium-hosting Cells")
+levels(ofav.combined.labeled)
+#saveRDS(ofav.combined.labeled, "/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/ofav.combined.labeled.2025.rds")
+ofav.combined.labeled <- readRDS("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/ofav.combined.labeled.2025.rds")
+```
+# Plot joint UMAP, then unintegrated UMAPs
+## Ordered joint UMAP
+```{r}
+levels(ofav.combined.labeled)
+my_levels <- c("Gastrodermis (Algal-hosting cells)", "Gastrodermis_1", "Gastrodermis_2", "Gastrodermis_3", "Gastrodermis_4", "Epidermis", "Calicoblastic Cells", "Cnidocytes", "Neurons_1", "Neurons_2", "Neurons_3", "Gland_1", "Gland_2", "Gland_3", "Immune", "Germline (sperm)", "Breviolum-hosting Cells", "Durusdinium-hosting Cells", "Extracellular Breviolum")
+ofav.combined.labeled@active.ident <- factor(x = ofav.combined.labeled@active.ident, levels = my_levels)
+
+# Define colors for clusters
+cluster_colors <- c("darkolivegreen", "darkolivegreen1", "darkolivegreen2", "darkolivegreen3", "darkolivegreen4", "seagreen1", "darkorchid4", "plum1", "deepskyblue3", "deepskyblue4", "deepskyblue2", "darkorange1", "darkorange2", "darkorange", "darkkhaki", "bisque3", "darkgoldenrod3", "darkgoldenrod4", "darkgoldenrod1")
+
+ofav.combined.labeled$cluster_colors <- cluster_colors[Idents(ofav.combined.labeled)]
+ofav.combined.labeled$celltypes <- my_levels[Idents(ofav.combined.labeled)]
+
+umap_labeled <- DimPlot(ofav.combined.labeled, reduction = "umap", split.by = "orig.ident", label = F, pt.size = 0.35, ncol = 2) + labs(title = "UMAP Clustering of Orbicella faveolata Holobiont", subtitle = "with hypothesized cell cluster IDs") + scale_color_manual(values = cluster_colors)
+umap_labeled
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/UMAPs-temps-labeled-legend-ordered.svg", umap_labeled, width=10, height=7)
+
+umap_labeled <- DimPlot(ofav.combined.labeled, reduction = "umap", label = F, pt.size = 0.35, ncol = 2) + labs(title = "UMAP Clustering of Orbicella faveolata Holobiont", subtitle = "with hypothesized cell cluster IDs") + scale_color_manual(values = cluster_colors)
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/UMAPs-combined-labeled-legend-ordered.svg", umap_labeled, width=10, height=7)
+
+umap_labeled <- DimPlot(ofav.combined.labeled, reduction = "umap", label = F, pt.size = 0.35, ncol = 2, group.by = "orig.ident") + labs(title = "UMAP Clustering of Orbicella faveolata Holobiont")
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/UMAPs-combined-labeled-legend-ordered_byident.svg", umap_labeled, width=10, height=7)
+
+umap_labeled <- DimPlot(ofav.combined.labeled, reduction = "umap", split.by = "orig.ident", label = F, pt.size = 0.35, ncol = 2) + labs(title = "UMAP Clustering of Orbicella faveolata Holobiont", subtitle = "with hypothesized cell cluster IDs") + scale_color_manual(values = cluster_colors)
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/UMAPs-temps-labeled-ordered-legend.svg", umap_labeled, width=10, height=7)
+```
+## Unintegrated by timepoint
+```{r}
+all.genes <- rownames(T0T)
+T0T<- ScaleData(T0T, features = all.genes)
+T0T<- RunPCA(T0T, verbose = FALSE, npcs=20)
+T0T <- JackStraw(T0T, num.replicate = 100, dims = 50)
+T0T <- ScoreJackStraw(T0T, dims = 1:20)
+JackStrawPlot(T0T, dims = 1:20)
+ElbowPlot(T0T)
+T0T<- RunTSNE(T0T, reduction = "pca", check_duplicates = FALSE, dims=1:20)
+T0T<- RunUMAP(T0T, dims=1:20)
+T0T <- FindNeighbors(T0T, dims = 1:20)
+T0T<- FindClusters(T0T, resolution=0.3, algorithm =1, group.singletons = F)
+UMAPPlot(T0T)
+
+celltype_df <- data.frame(
+  barcode = colnames(ofav.combined.labeled),
+  celltype = ofav.combined.labeled$celltypes  # Replace with your annotation column
+)
+
+# Append "_1" to T0T cell names temporarily for matching
+t0t_barcodes <- paste0(colnames(T0T), "_1")
+# Only keep annotations for matching barcodes
+matched_annotations <- celltype_df[celltype_df$barcode %in% t0t_barcodes, ]
+
+# Ensure correct order
+cell_order <- match(t0t_barcodes, matched_annotations$barcode)
+
+# Assign annotations
+T0T$celltype <- matched_annotations$celltype[cell_order]
+
+my_levels <- c("Gastrodermis (Algal-hosting cells)", "Gastrodermis_1", "Gastrodermis_2", "Gastrodermis_3", "Gastrodermis_4", "Epidermis", "Calicoblastic Cells", "Cnidocytes", "Neurons_1", "Neurons_2", "Neurons_3", "Gland_1", "Gland_2", "Gland_3", "Immune", "Germline (sperm)", "Breviolum-hosting Cells", "Durusdinium-hosting Cells", "Extracellular Breviolum")
+T0T@meta.data$celltype <- factor(x = T0T@meta.data$celltype , levels = my_levels)
+
+umap_labeled <- DimPlot(T0T, reduction = "umap", group.by = "celltype", label = F, pt.size = 0.35, ncol = 2) + labs(title = "UMAP Clustering of Orbicella faveolata Holobiont", subtitle = "Unintegrated T0T") + scale_color_manual(values = cluster_colors) + ggplot2::theme(legend.position = "none") +
+  xlim(-25, 15) + 
+  ylim(-12, 7)
+umap_labeled
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/UMAP-unintegrated-T0T.svg", umap_labeled, width=12, height=7)
+
+all.genes <- rownames(T3T)
+T3T<- ScaleData(T3T, features = all.genes)
+T3T<- RunPCA(T3T, verbose = FALSE, npcs=20)
+T3T <- JackStraw(T3T, num.replicate = 100, dims = 50)
+T3T <- ScoreJackStraw(T3T, dims = 1:20)
+JackStrawPlot(T3T, dims = 1:20)
+ElbowPlot(T3T)
+T3T<- RunTSNE(T3T, reduction = "pca", check_duplicates = FALSE, dims=1:20)
+T3T<- RunUMAP(T3T, dims=1:20)
+T3T <- FindNeighbors(T3T, dims = 1:20)
+T3T<- FindClusters(T3T, resolution=0.3, algorithm =1, group.singletons = F)
+UMAPPlot(T3T)
+
+celltype_df <- data.frame(
+  barcode = colnames(ofav.combined.labeled),
+  celltype = ofav.combined.labeled$celltypes  # Replace with your annotation column
+)
+
+# Append "_1" to T3T cell names temporarily for matching
+T3T_barcodes <- paste0(colnames(T3T), "_2")
+# Only keep annotations for matching barcodes
+matched_annotations <- celltype_df[celltype_df$barcode %in% T3T_barcodes, ]
+
+# Ensure correct order
+cell_order <- match(T3T_barcodes, matched_annotations$barcode)
+
+# Assign annotations
+T3T$celltype <- matched_annotations$celltype[cell_order]
+
+my_levels <- c("Gastrodermis (Algal-hosting cells)", "Gastrodermis_1", "Gastrodermis_2", "Gastrodermis_3", "Gastrodermis_4", "Epidermis", "Calicoblastic Cells", "Cnidocytes", "Neurons_1", "Neurons_2", "Neurons_3", "Gland_1", "Gland_2", "Gland_3", "Immune", "Germline (sperm)", "Breviolum-hosting Cells", "Durusdinium-hosting Cells", "Extracellular Breviolum")
+T3T@meta.data$celltype <- factor(x = T3T@meta.data$celltype , levels = my_levels)
+
+umap_labeled <- DimPlot(T3T, reduction = "umap", group.by = "celltype", label = F, pt.size = 0.35, ncol = 2) + labs(title = "UMAP Clustering of Orbicella faveolata Holobiont", subtitle = "Unintegrated T3T") + scale_color_manual(values = cluster_colors) + ggplot2::theme(legend.position = "none")  + xlim(-25, 15) + 
+  ylim(-12, 7)
+umap_labeled
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/UMAP-unintegrated-T3T.svg", umap_labeled, width=12, height=7)
+
+all.genes <- rownames(T5T)
+T5T<- ScaleData(T5T, features = all.genes)
+T5T<- RunPCA(T5T, verbose = FALSE, npcs=20)
+T5T <- JackStraw(T5T, num.replicate = 100, dims = 50)
+T5T <- ScoreJackStraw(T5T, dims = 1:20)
+JackStrawPlot(T5T, dims = 1:20)
+ElbowPlot(T5T)
+T5T<- RunTSNE(T5T, reduction = "pca", check_duplicates = FALSE, dims=1:20)
+T5T<- RunUMAP(T5T, dims=1:20)
+T5T <- FindNeighbors(T5T, dims = 1:20)
+T5T<- FindClusters(T5T, resolution=0.3, algorithm =1, group.singletons = F)
+UMAPPlot(T5T)
+
+celltype_df <- data.frame(
+  barcode = colnames(ofav.combined.labeled),
+  celltype = ofav.combined.labeled$celltypes  # Replace with your annotation column
+)
+
+# Append "_1" to T5T cell names temporarily for matching
+T5T_barcodes <- paste0(colnames(T5T), "_3")
+# Only keep annotations for matching barcodes
+matched_annotations <- celltype_df[celltype_df$barcode %in% T5T_barcodes, ]
+
+# Ensure correct order
+cell_order <- match(T5T_barcodes, matched_annotations$barcode)
+
+# Assign annotations
+T5T$celltype <- matched_annotations$celltype[cell_order]
+
+my_levels <- c("Gastrodermis (Algal-hosting cells)", "Gastrodermis_1", "Gastrodermis_2", "Gastrodermis_3", "Gastrodermis_4", "Epidermis", "Calicoblastic Cells", "Cnidocytes", "Neurons_1", "Neurons_2", "Neurons_3", "Gland_1", "Gland_2", "Gland_3", "Immune", "Germline (sperm)", "Breviolum-hosting Cells", "Durusdinium-hosting Cells", "Extracellular Breviolum")
+T5T@meta.data$celltype <- factor(x = T5T@meta.data$celltype , levels = my_levels)
+
+umap_labeled <- DimPlot(T5T, reduction = "umap", group.by = "celltype", label = F, pt.size = 0.35, ncol = 2) + labs(title = "UMAP Clustering of Orbicella faveolata Holobiont", subtitle = "Unintegrated T5T") + scale_color_manual(values = cluster_colors) + ggplot2::theme(legend.position = "none") + xlim(-25, 15) + 
+  ylim(-12, 7)
+umap_labeled
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/UMAP-unintegrated-T5T.svg", umap_labeled, width=12, height=7)
+
+all.genes <- rownames(T7T)
+T7T<- ScaleData(T7T, features = all.genes)
+T7T<- RunPCA(T7T, verbose = FALSE, npcs=20)
+T7T <- JackStraw(T7T, num.replicate = 100, dims = 50)
+T7T <- ScoreJackStraw(T7T, dims = 1:20)
+JackStrawPlot(T7T, dims = 1:20)
+ElbowPlot(T7T)
+T7T<- RunTSNE(T7T, reduction = "pca", check_duplicates = FALSE, dims=1:20)
+T7T<- RunUMAP(T7T, dims=1:20)
+T7T <- FindNeighbors(T7T, dims = 1:20)
+T7T<- FindClusters(T7T, resolution=0.3, algorithm =1, group.singletons = F)
+UMAPPlot(T7T)
+
+celltype_df <- data.frame(
+  barcode = colnames(ofav.combined.labeled),
+  celltype = ofav.combined.labeled$celltypes  # Replace with your annotation column
+)
+
+# Append "_1" to T7T cell names temporarily for matching
+T7T_barcodes <- paste0(colnames(T7T), "_4")
+# Only keep annotations for matching barcodes
+matched_annotations <- celltype_df[celltype_df$barcode %in% T7T_barcodes, ]
+
+# Ensure correct order
+cell_order <- match(T7T_barcodes, matched_annotations$barcode)
+
+# Assign annotations
+T7T$celltype <- matched_annotations$celltype[cell_order]
+
+my_levels <- c("Gastrodermis (Algal-hosting cells)", "Gastrodermis_1", "Gastrodermis_2", "Gastrodermis_3", "Gastrodermis_4", "Epidermis", "Calicoblastic Cells", "Cnidocytes", "Neurons_1", "Neurons_2", "Neurons_3", "Gland_1", "Gland_2", "Gland_3", "Immune", "Germline (sperm)", "Breviolum-hosting Cells", "Durusdinium-hosting Cells", "Extracellular Breviolum")
+T7T@meta.data$celltype <- factor(x = T7T@meta.data$celltype , levels = my_levels)
+
+umap_labeled <- DimPlot(T7T, reduction = "umap", group.by = "celltype", label = F, pt.size = 0.35, ncol = 2) + labs(title = "UMAP Clustering of Orbicella faveolata Holobiont", subtitle = "Unintegrated T7T") + scale_color_manual(values = cluster_colors) + ggplot2::theme(legend.position = "none") + xlim(-25, 15) + 
+  ylim(-12, 7)
+umap_labeled
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/UMAP-unintegrated-T7T.svg", umap_labeled, width=12, height=7)
+
+
+T0T$sample <- "T0T"
+T3T$sample <- "T3T"
+T5T$sample <- "T5T"
+T7T$sample <- "T7T"
+unintegrated_combined <- merge(
+  T0T, 
+  y = list(T3T, T5T, T7T), 
+  add.cell.ids = c("T0T", "T3T", "T5T", "T7T"), 
+  project = "AllTimepoints"
+)
+unintegrated_combined <- NormalizeData(unintegrated_combined)
+unintegrated_combined <- FindVariableFeatures(unintegrated_combined)
+unintegrated_combined <- ScaleData(unintegrated_combined)
+unintegrated_combined <- RunPCA(unintegrated_combined)
+unintegrated_combined <- RunUMAP(unintegrated_combined, dims = 1:20)
+umap_labeled <- DimPlot(unintegrated_combined, group.by = "sample", label = TRUE)
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/UMAP-unintegrated-combined.svg", umap_labeled, width=7, height=7)
+
+my_levels <- c("Gastrodermis (Algal-hosting cells)", "Gastrodermis_1", "Gastrodermis_2", "Gastrodermis_3", "Gastrodermis_4", "Epidermis", "Calicoblastic Cells", "Cnidocytes", "Neurons_1", "Neurons_2", "Neurons_3", "Gland_1", "Gland_2", "Gland_3", "Immune", "Germline (sperm)", "Breviolum-hosting Cells", "Durusdinium-hosting Cells", "Extracellular Breviolum")
+unintegrated_combined@meta.data$celltype <- factor(x = unintegrated_combined@meta.data$celltype , levels = my_levels)
+umap_labeled <- DimPlot(unintegrated_combined, split.by = "sample", group.by = "celltype",label = F)+ scale_color_manual(values = cluster_colors) + ggplot2::theme(legend.position = "none")
+umap_labeled
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/UMAP-unintegrated-combined-split.svg", umap_labeled, width=25, height=7)
+
+my_levels <- c("Gastrodermis (Algal-hosting cells)", "Gastrodermis_1", "Gastrodermis_2", "Gastrodermis_3", "Gastrodermis_4", "Epidermis", "Calicoblastic Cells", "Cnidocytes", "Neurons_1", "Neurons_2", "Neurons_3", "Gland_1", "Gland_2", "Gland_3", "Immune", "Germline (sperm)", "Breviolum-hosting Cells", "Durusdinium-hosting Cells", "Extracellular Breviolum")
+unintegrated_combined@meta.data$celltype <- factor(x = unintegrated_combined@meta.data$celltype , levels = my_levels)
+umap_labeled <- DimPlot(unintegrated_combined, group.by = "celltype",label = F)+ scale_color_manual(values = cluster_colors) + ggplot2::theme(legend.position = "none")
+umap_labeled
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/UMAP-unintegrated-combined-celltype.svg", umap_labeled, width=7, height=7)
+```
+## Harmony (https://portals.broadinstitute.org/harmony/SeuratV3.html) for integration, plot old cell types on top and see if structure holds
+```{r}
+library(Seurat)
+library(cowplot)
+library(harmony)
+
+ofav.harmony <- merge(x = T0T, y = list(T3T, T5T, T7T)) %>%
+    Seurat::NormalizeData(verbose = FALSE) %>%
+    FindVariableFeatures(selection.method = "vst", nfeatures = 2000) %>% 
+    ScaleData(verbose = FALSE) %>% 
+    RunPCA(pc.genes = pbmc@var.genes, npcs = 20, verbose = FALSE)
+
+options(repr.plot.height = 5, repr.plot.width = 12)
+p1 <- DimPlot(object = ofav.harmony, reduction = "pca", pt.size = .1, group.by = "orig.ident")
+p2 <- VlnPlot(object = ofav.harmony, features = "nFeature_RNA", group.by = "orig.ident", pt.size = .1)
+plot_grid(p1,p2)
+
+options(repr.plot.height = 2.5, repr.plot.width = 6)
+ofav.harmony <- ofav.harmony %>% 
+    RunHarmony("orig.ident", plot_convergence = TRUE)
+harmony_embeddings <- Embeddings(ofav.harmony, 'harmony')
+harmony_embeddings[1:5, 1:5]
+
+options(repr.plot.height = 5, repr.plot.width = 12)
+p1 <- DimPlot(object = ofav.harmony, reduction = "harmony", pt.size = .1, group.by = "orig.ident")
+p2 <- VlnPlot(object = ofav.harmony, features = "harmony_2", group.by = "orig.ident", pt.size = .1)
+plot_grid(p1,p2)
+
+ofav.harmony <- ofav.harmony %>% 
+    RunUMAP(reduction = "harmony", dims = 1:20) %>% 
+    FindNeighbors(reduction = "harmony", dims = 1:20) %>% 
+    FindClusters(resolution = 0.3) %>% 
+    identity()
+
+# 18 Communities
+
+options(repr.plot.height = 4, repr.plot.width = 10)
+DimPlot(ofav.harmony, reduction = "umap", group.by = "orig.ident", pt.size = .1, split.by = 'orig.ident')
+
+options(repr.plot.height = 4, repr.plot.width = 6)
+DimPlot(ofav.harmony, reduction = "umap", label = TRUE, pt.size = .1)
+
+# Extract barcode and celltype information from the labeled object
+celltype_df <- data.frame(
+  barcode = colnames(ofav.combined.labeled),
+  celltype = ofav.combined.labeled$celltypes,
+  stringsAsFactors = FALSE
+)
+# Match barcodes between new integrated object and the original
+barcodes_new <- colnames(ofav.harmony)  # replace with your new object's name
+matched_df <- celltype_df[celltype_df$barcode %in% barcodes_new, ]
+
+# Ensure order is correct for assignment
+barcode_order <- match(barcodes_new, matched_df$barcode)
+
+# Assign cell type labels
+ofav.harmony$celltype <- matched_df$celltype[barcode_order]
+my_levels <- c("Gastrodermis (Algal-hosting cells)", "Gastrodermis_1", "Gastrodermis_2", "Gastrodermis_3", "Gastrodermis_4", "Epidermis", "Calicoblastic Cells", "Cnidocytes", "Neurons_1", "Neurons_2", "Neurons_3", "Gland_1", "Gland_2", "Gland_3", "Immune", "Germline (sperm)", "Breviolum-hosting Cells", "Durusdinium-hosting Cells", "Extracellular Breviolum")
+ofav.harmony@meta.data$celltype <- factor(x = ofav.harmony@meta.data$celltype , levels = my_levels)
+umap_labeled <- DimPlot(ofav.harmony, reduction = "umap", group.by = "celltype", label = T, pt.size = 0.35, ncol = 2) + labs(title = "UMAP Clustering of Orbicella faveolata Holobiont", subtitle = "Harmony integrated dataset") + scale_color_manual(values = cluster_colors)+ ggplot2::theme(legend.position = "none") 
+umap_labeled
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/UMAP-integrated-harmony.svg", umap_labeled, width=12, height=7)
+
+
+umap_labeled <- DimPlot(ofav.harmony, reduction = "umap", group.by = "celltype", label = T, pt.size = 0.35, ncol = 2, split.by = 'orig.ident') + labs(title = "UMAP Clustering of Orbicella faveolata Holobiont", subtitle = "Harmony integrated dataset") + scale_color_manual(values = cluster_colors)
+umap_labeled
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/UMAP-integrated-harmony-split.svg", umap_labeled, width=10, height=7)
+
+umap_labeled <- DimPlot(ofav.harmony, reduction = "umap", group.by = "orig.ident", label = F, pt.size = 0.35, ncol = 2) + labs(title = "UMAP Clustering of Orbicella faveolata Holobiont", subtitle = "Harmony integrated dataset")
+umap_labeled
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/UMAP-integrated-harmony-origident.svg", umap_labeled, width=10, height=7)
+```
+
+- compare all three medthods (unintegrated, seurat integration, hamrony vs each timepoint and the combined)
+
+
+# Correlation Analysis 
+- Obtain a correlation measure for the vector of all genes in each control samples, which should correlate quite well among themselves (as they report no changes), giving the typical RNA tpm scatter plot.
+```{r}
+# Read in files for each control sample
+t0 <- read.table("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/controls/STAR_mapping/T0C_ReadsPerGene.out.tab", header = FALSE, stringsAsFactors = FALSE)
+t3 <- read.table("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/controls/STAR_mapping/T3C_ReadsPerGene.out.tab", header = FALSE, stringsAsFactors = FALSE)
+t5 <- read.table("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/controls/STAR_mapping/T5C_ReadsPerGene.out.tab", header = FALSE, stringsAsFactors = FALSE)
+t7 <- read.table("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/controls/STAR_mapping/T7C_ReadsPerGene.out.tab", header = FALSE, stringsAsFactors = FALSE)
+
+# Keep only gene rows (skip the first 4 metadata rows)
+t0 <- t0[5:nrow(t0), ]
+t3 <- t3[5:nrow(t3), ]
+t5 <- t5[5:nrow(t5), ]
+t7 <- t7[5:nrow(t7), ]
+
+# Extract gene IDs and unstranded counts (column 2)
+gene_ids <- t0$V1
+count_matrix <- data.frame(
+  row.names = gene_ids,
+  T0 = as.numeric(t0$V2),
+  T3 = as.numeric(t3$V2),
+  T5 = as.numeric(t5$V2),
+  T7 = as.numeric(t7$V2)
+)
+
+log_counts <- log2(count_matrix + 1)
+
+cor_matrix <- cor(log_counts, method = "pearson")
+print(cor_matrix)
+pairs(log_counts, main = "log2(count + 1) scatterplots - Control Samples")
+library(GGally)
+tpm_scatter <- ggpairs(as.data.frame(log_counts))
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/control_correlations.png", tpm_scatter, height=8, width = 8)
+```
+
+# Pseudobulk
+- Do each cluster and obtain correlation values (specific cluster should be distinct from bulk samples). 
+```{r}
+library(Seurat)
+library(Matrix)
+library(dplyr)
+
+ofav.combined.labeled$time_cluster <- paste0(ofav.combined.labeled$orig.ident, "_", ofav.combined.labeled$celltypes)
+Idents(ofav.combined.labeled) <- "time_cluster"
+
+# Drop unused levels again just in case
+Idents(ofav.combined.labeled) <- droplevels(Idents(ofav.combined.labeled))
+
+pseudobulk_counts <- AggregateExpression(
+  ofav.combined.labeled,
+  group.by = "time_cluster",
+  assay = "RNA",
+  slot = "counts"
+)$RNA
+
+common_genes <- intersect(rownames(pseudobulk_counts), rownames(count_matrix))
+
+bulk_mat <- count_matrix[common_genes, ]
+pseudo_mat <- pseudobulk_counts[common_genes, ]
+library(edgeR)
+
+# Pseudobulk normalization
+pseudo_cpm <- cpm(pseudo_mat, log = TRUE, prior.count = 1)
+
+# Bulk normalization
+bulk_cpm <- cpm(bulk_mat, log = TRUE, prior.count = 1)
+cor_matrix <- cor(pseudo_cpm, bulk_cpm, method = "pearson")
+heatmap(cor_matrix, main = "Pseudobulk vs Bulk Control Correlation")
+
+# Define the desired column (bulk sample) order
+sorted_controls <- c("T0", "T3", "T5", "T7")
+
+# Reorder the columns of the correlation matrix
+cor_matrix_sorted <- cor_matrix[, sorted_controls]
+
+# Plot the heatmap with sorted columns
+heatmap(cor_matrix_sorted,   Rowv = NA,
+  Colv = NA, scale = "none",
+  col = colorRampPalette(c("blue", "white", "red"))(100), main = "Pseudobulk vs Bulk Control Correlation")
+
+library(pheatmap)
+
+# Define column order
+sorted_cols <- c("T0", "T3", "T5", "T7")
+cor_matrix_sorted <- cor_matrix[, sorted_cols]
+
+# Create row annotations (e.g., pseudobulk timepoints or clusters)
+# Example: extract time from rownames
+time_anno <- data.frame(Timepoint = sub("_.*", "", rownames(cor_matrix_sorted)))
+rownames(time_anno) <- rownames(cor_matrix_sorted)
+
+pheatmap(
+  cor_matrix_sorted,
+  cluster_rows = TRUE,
+  cluster_cols = FALSE,
+  annotation_row = time_anno,
+  main = "Pseudobulk vs Bulk Control Correlation"
+)
+
+
+library(pheatmap)
+
+# Define scale from 0.0 to 1.0
+breaks_list <- seq(-1, 1, length.out = 200)
+
+# Create a matrix of text labels — only show R if > 0.9
+text_labels <- ifelse(cor_matrix_sorted > 0.7,
+                      format(round(cor_matrix_sorted, 2), nsmall = 2),
+                      "")
+
+pseudobulk_corr <- pheatmap(
+  cor_matrix_sorted,
+  cluster_rows = TRUE,
+  cluster_cols = FALSE,
+  annotation_row = time_anno,
+  color = colorRampPalette(c("blue", "white", "red"))(200),
+  breaks = breaks_list,
+  display_numbers = text_labels,
+  number_color = "black",
+  fontsize_number = 10,
+  main = "Pseudobulk vs Bulk Control Correlation"
+)
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/pseudobulk_correlations.png", pseudobulk_corr, height=12, width = 10)
+
+# Format all R values to 2 decimal places for display
+text_labels <- format(round(cor_matrix_sorted, 2), nsmall = 2)
+pseudobulk_corr <- pheatmap(
+  cor_matrix_sorted,
+  cluster_rows = TRUE,
+  cluster_cols = FALSE,
+  annotation_row = time_anno,
+  color = colorRampPalette(c("blue", "white", "red"))(200),
+  breaks = breaks_list,
+  display_numbers = text_labels,
+  number_color = "black",
+  fontsize_number = 10,
+  main = "Pseudobulk vs Bulk Control Correlation"
+)
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/pseudobulk_correlations_labeled.png", pseudobulk_corr, height=12, width = 10)
+```
+## Pseudobulk Timepoints and compare to controls
+```{r}
+# Check your metadata to confirm the column name
+table(ofav.combined.labeled$orig.ident)  # replace with actual column name
+
+# Aggregate by timepoint
+pseudobulk_by_time <- AggregateExpression(
+  ofav.combined.labeled,
+  group.by = "orig.ident",  # or the correct metadata column
+  assay = "RNA",
+  slot = "counts"
+)$RNA
+
+# Match genes between pseudobulk and bulk
+common_genes <- intersect(rownames(pseudobulk_by_time), rownames(count_matrix))
+
+pseudobulk_mat <- pseudobulk_by_time[common_genes, ]
+bulk_mat <- count_matrix[common_genes, ]
+
+cor_matrix_time <- cor(pseudobulk_mat, bulk_mat, method = "pearson")
+
+library(pheatmap)
+
+# Create label matrix with R values for all cells
+text_labels <- format(round(cor_matrix_time, 2), nsmall = 2)
+
+# Set scale from 0 to 1
+breaks_list <- seq(-1, 1, length.out = 200)
+
+# Heatmap
+pseudobulk_corr <- pheatmap(
+  cor_matrix_time,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  display_numbers = text_labels,
+  number_color = "black",
+  fontsize_number = 10,
+  color = colorRampPalette(c("blue", "white", "red"))(200),
+  breaks = breaks_list,
+  main = "Pseudobulk by Timepoint vs Bulk Control Correlation"
+)
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/pseudobulk_timepoint_correlations_labeled.png", pseudobulk_corr, height=8, width = 10)
+```
+## All vs all pseudobulk
+```{r}
+# Find common genes across both datasets
+common_genes <- intersect(rownames(pseudobulk_by_time), rownames(count_matrix))
+
+# Subset both to common genes
+pseudobulk_mat <- pseudobulk_by_time[common_genes, ]
+bulk_mat <- count_matrix[common_genes, ]
+# Combine column-wise (genes as rows)
+combined_mat <- cbind(pseudobulk_mat, bulk_mat)
+cor_matrix_all <- cor(combined_mat, method = "pearson")
+library(pheatmap)
+
+# Label with R values
+text_labels <- format(round(cor_matrix_all, 2), nsmall = 2)
+
+# Set color scale from 0 to 1
+breaks_list <- seq(-1, 1, length.out = 200)
+
+pseudobulk_corr <- pheatmap(
+  cor_matrix_all,
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  display_numbers = text_labels,
+  number_color = "black",
+  fontsize_number = 10,
+  color = colorRampPalette(c("blue", "white", "red"))(200),
+  breaks = breaks_list,
+  main = "All Sample Correlation: Pseudobulk and Bulk"
+)
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/pseudobulk_all_correlations_labeled.png", pseudobulk_corr, height=8, width = 10)
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/pseudobulk_all_correlations_labeled.svg", pseudobulk_corr, height=8, width = 10)
+```
+
+
+# Compositional analysis through heat-stress
+```{r}
+ofav.combined.labeled <- readRDS("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/ofav.combined.labeled.2025.rds")
+# Assuming clusters are the identities
+my_levels <- c("Gastrodermis (Algal-hosting cells)", "Gastrodermis_1", "Gastrodermis_2", "Gastrodermis_3", "Gastrodermis_4", "Epidermis", "Calicoblastic Cells", "Cnidocytes", "Neurons_1", "Neurons_2", "Neurons_3", "Gland_1", "Gland_2", "Gland_3", "Immune", "Germline (sperm)", "Breviolum-hosting Cells", "Durusdinium-hosting Cells", "Extracellular Breviolum")
+ofav.combined.labeled@active.ident <- factor(x = ofav.combined.labeled@active.ident, levels = my_levels)
+ofav.combined.labeled$celltypes <- my_levels[Idents(ofav.combined.labeled)]
+Idents(ofav.combined.labeled) <- ofav.combined.labeled$celltypes
+cluster_sample_table <- table(Idents(ofav.combined.labeled), ofav.combined.labeled$orig.ident)
+cluster_sample_df <- as.data.frame.matrix(cluster_sample_table)
+# Replace "healthy" with the actual name of your healthy sample
+healthy_counts <- cluster_sample_df[["Ofav-T0-T"]]
+
+# Compute ratio to healthy for each sample
+ratio_df <- sweep(cluster_sample_df, 1, healthy_counts, FUN = "/")
+log2_ratio_df <- log2(ratio_df)
+library(pheatmap)
+
+# Define custom color palette: blue for negative, white for zero, red for positive
+breaks <- seq(-max(abs(log2_ratio_df)), max(abs(log2_ratio_df)), length.out = 100)
+colors <- colorRampPalette(c("blue", "white", "red"))(length(breaks) - 1)
+log2_ratio_df <- log2_ratio_df[, colnames(log2_ratio_df) != "Ofav-T0-T"]
+# Plot the heatmap
+log2_ratio_df <- log2_ratio_df[my_levels, ]  # reorder rows
+da_cells <- pheatmap(log2_ratio_df,
+         cluster_rows = FALSE,
+         cluster_cols = FALSE,
+         color = colors,
+         breaks = breaks,
+         display_numbers = TRUE,         # Show the ratio values in each cell
+         number_format = "%.2f",         # Format to 2 decimal places
+         fontsize_number = 10,           # Size of numbers inside the heatmap
+         main = "Log2 Cell Type Ratio vs Healthy")
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/da_clusters.png", da_cells, height=8, width = 10)
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/da_clusters.svg", da_cells, height=8, width = 10)
+```
+
+
+# Pseudoreplicate Analysis
+- generate all possible DGEs for each timepoint, then each cluster, Follow up on consistent genes seen throughout (DElegate- uses 3 pseudo-replicates)
+## By timepoint
+```{r}
+# Loop all
+library(DElegate)
+library(dplyr)
+library(Seurat)
+
+# Set Idents to timepoints
+Idents(ofav.combined.labeled) <- ofav.combined.labeled$orig.ident
+
+# List of timepoints
+timepoints <- unique(ofav.combined.labeled$orig.ident)
+comparison_list <- combn(timepoints, 2, simplify = FALSE)
+
+# List to store all DE results
+all_de_results <- list()
+
+for (pair in comparison_list) {
+  group1 <- pair[1]
+  group2 <- pair[2]
+  comparison_name <- paste(group1, "vs", group2, sep = "_")
+
+  cat("Running:", comparison_name, "\n")
+
+  # Run pseudoreplicate DE for this pair
+  de_results <- findDE(
+    object = ofav.combined.labeled,
+    compare = c(group1, group2)
+  )
+
+  # Filter DE genes
+  top_DE <- de_results %>%
+    filter(log_fc > 0, padj < 0.05) %>%
+    mutate(comparison = comparison_name)
+
+  # Store results
+  all_de_results[[comparison_name]] <- top_DE
+}
+
+# Combine all results into one data frame
+all_de_df <- bind_rows(all_de_results)
+
+# View top few rows
+head(all_de_df)
+
+all_de_df_sorted <- all_de_df %>%
+  arrange(padj)
+
+all_de_df_unique <- all_de_df_sorted %>%
+  distinct(feature, .keep_all = TRUE)
+
+# Export to CSV
+write.csv(all_de_df_unique, "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/pseudoreplicate/DEGs_timepoints.csv", row.names = FALSE)
+```
+## By specific cluster
+```{r}
+# Loop all
+library(DElegate)
+library(dplyr)
+library(Seurat)
+
+# Set Idents to cluster label
+Idents(ofav.combined.labeled) <- ofav.combined.labeled$time_cluster  # or another relevant field
+
+# Full list of cluster-timepoint labels
+cluster_levels <- levels(Idents(ofav.combined.labeled))
+
+# Extract base cluster names (remove timepoint prefix)
+base_clusters <- str_replace(cluster_levels, "Ofav-T[0357]-T_", "")
+shared_clusters <- names(table(base_clusters))[table(base_clusters) >= 2]
+
+# Function to extract clusters with a given base name
+get_cluster_variants <- function(cluster_name) {
+  grep(paste0("_", cluster_name, "$"), cluster_levels, value = TRUE)
+}
+
+# Storage for results
+all_results <- list()
+
+# Loop over each shared cluster
+for (cluster in shared_clusters) {
+  variants <- get_cluster_variants(cluster)
+  if (length(variants) < 2) next
+  
+  # Generate all pairwise combinations
+  pairs <- combn(variants, 2, simplify = FALSE)
+  
+  for (pair in pairs) {
+    comp_name <- paste0(pair[1], "_vs_", pair[2])
+    cat("Running:", comp_name, "\n")
+    
+    # Subset and compare
+    res <- findDE(object = ofav.combined.labeled, compare = pair)
+    
+    # Filter DE genes and tag comparison
+    res_filt <- res %>%
+      filter(log_fc > 0, padj < 0.05) %>%
+      mutate(comparison = comp_name, cluster = cluster)
+    
+    all_results[[comp_name]] <- res_filt
+  }
+}
+
+# Combine, sort, remove duplicates, export
+final_df <- bind_rows(all_results) %>%
+  arrange(cluster, padj) %>%
+  distinct(cluster, feature, .keep_all = TRUE)
+
+write.csv(final_df, "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/pseudoreplicate/DEGs_clusterwise_timepoints.csv", row.names = FALSE)
+```
+## By super-clusters
+```{r}
+cluster_map <- c(
+  "Gastrodermis_1" = "Gastrodermis",
+  "Epidermis" = "Epidermis",
+  "Extracellular Breviolum" = "Extracellular Breviolum",
+  "Breviolum-hosting Cells" = "Breviolum-hosting Cells",
+  "Calicoblastic Cells" = "Calicoblastic Cells",
+  "Neurons_1" = "Neurons",
+  "Gastrodermis (Algal-hosting cells)" = "Gastrodermis",
+  "Gland_1" = "Gland",
+  "Neurons_2" = "Neurons",
+  "Gastrodermis_2" = "Gastrodermis",
+  "Germline (sperm)" = "Germline (sperm)",
+  "Gland_2" = "Gland",
+  "Neurons_3" = "Neurons",
+  "Gastrodermis_3" = "Gastrodermis",
+  "Durusdinium-hosting Cells" = "Durusdinium",
+  "Gland_3" = "Gland",
+  "Immune" = "Immune",
+  "Gastrodermis_4" = "Gastrodermis",
+  "Cnidocytes" = "Cnidocytes"
+)
+
+# Get current identities
+current_idents <- Idents(ofav.combined.labeled)
+
+# Extract subcluster name (the part after the last underscore-prefixed timepoint)
+subclusters <- sub(".*Ofav-T\\d+-T_", "", current_idents)
+
+# Map to supercluster
+superclusters <- cluster_map[subclusters]
+
+# Create new combined identity with timepoint and supercluster
+timepoints <- sub("_.*", "", current_idents)  # get 'Ofav-T0-T'
+new_idents <- paste0(timepoints, "_", superclusters)
+
+# Assign back to object
+Idents(ofav.combined.labeled) <- new_idents
+
+library(DElegate)
+library(dplyr)
+library(Seurat)
+library(stringr)
+
+# Set identities to the renamed cluster labels (e.g., "Ofav-T3-T_Gastrodermis")
+Idents(ofav.combined.labeled) <- Idents(ofav.combined.labeled)  # already updated
+
+# Get full list of cluster-timepoint identities
+cluster_levels <- levels(Idents(ofav.combined.labeled))
+
+# Extract base cluster names by stripping the timepoint prefix
+base_clusters <- str_replace(cluster_levels, "Ofav-T[0357]-T_", "")
+shared_clusters <- names(table(base_clusters))[table(base_clusters) >= 2]
+
+# Function to get all timepoint-specific variants for a given cluster
+get_cluster_variants <- function(cluster_name) {
+  grep(paste0("_", cluster_name, "$"), cluster_levels, value = TRUE)
+}
+
+# Container for all results
+all_results <- list()
+
+# Loop through each shared cluster type
+for (cluster in shared_clusters) {
+  variants <- get_cluster_variants(cluster)
+  if (length(variants) < 2) next  # skip if only present in one timepoint
+  
+  pairs <- combn(variants, 2, simplify = FALSE)
+  
+  for (pair in pairs) {
+    comp_name <- paste0(pair[1], "_vs_", pair[2])
+    cat("Running:", comp_name, "\n")
+    
+    # Run pseudoreplicate DE
+    res <- findDE(object = ofav.combined.labeled, compare = pair)
+    
+    # Filter results
+    res_filt <- res %>%
+      filter(log_fc > 0, padj < 0.05) %>%
+      mutate(comparison = comp_name, cluster = cluster)
+    
+    all_results[[comp_name]] <- res_filt
+  }
+}
+
+# Combine results, sort within cluster by padj, and remove duplicates within each cluster
+final_df <- bind_rows(all_results) %>%
+  arrange(cluster, padj) %>%
+  distinct(cluster, feature, .keep_all = TRUE)
+
+# Export to CSV
+write.csv(
+  final_df,
+  "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/pseudoreplicate/DEGs_superclusterwise_timepoints.csv",
+  row.names = FALSE
+)
+```
+# Re-run DEG analysis at cluster level then super-cluster level
+## First marker genes for cell clusters for whole dataset
+```{r}
+ofav.combined.labeled <- readRDS("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/ofav.combined.labeled.2025.rds")
+all_genes <- rownames(ofav.combined.labeled)
+coral_genes <- grep("^QW917-", all_genes, value = TRUE)
+ofav.markers <- FindAllMarkers(ofav.combined.labeled, features = coral_genes, only.pos = TRUE, min.pct = 0.1, min.diff.pct = 0.1 , logfc.threshold = 0.1, return.thresh=0.05)
+ofav.markers <- ofav.markers[ofav.markers$p_val_adj<0.05,]
+write_csv(ofav.markers, "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/coralcluster_markers.csv")
+
+cluster_map <- c(
+  "Gastrodermis_1" = "Gastrodermis",
+  "Epidermis" = "Epidermis",
+  "Extracellular Breviolum" = "Extracellular Breviolum",
+  "Breviolum-hosting Cells" = "Breviolum-hosting Cells",
+  "Calicoblastic Cells" = "Calicoblastic Cells",
+  "Neurons_1" = "Neurons",
+  "Gastrodermis (Algal-hosting cells)" = "Gastrodermis",
+  "Gland_1" = "Gland",
+  "Neurons_2" = "Neurons",
+  "Gastrodermis_2" = "Gastrodermis",
+  "Germline (sperm)" = "Germline (sperm)",
+  "Gland_2" = "Gland",
+  "Neurons_3" = "Neurons",
+  "Gastrodermis_3" = "Gastrodermis",
+  "Durusdinium-hosting Cells" = "Durusdinium",
+  "Gland_3" = "Gland",
+  "Immune" = "Immune",
+  "Gastrodermis_4" = "Gastrodermis",
+  "Cnidocytes" = "Cnidocytes"
+)
+
+# Get current identities
+current_idents <- Idents(ofav.combined.labeled)
+
+# Map to supercluster
+superclusters <- cluster_map[current_idents]
+
+# Assign back to object
+Idents(ofav.combined.labeled) <- superclusters
+Idents(ofav.combined.labeled)
+
+ofav.markers <- FindAllMarkers(ofav.combined.labeled, features = coral_genes, only.pos = TRUE, min.pct = 0.1, min.diff.pct = 0.1 , logfc.threshold = 0.1, return.thresh=0.05)
+ofav.markers <- ofav.markers[ofav.markers$p_val_adj<0.05,]
+write_csv(ofav.markers, "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/coralsupercluster_markers.csv")
+```
+## Now time-series DE
+```{r}
+ofav.combined.labeled <- readRDS("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/ofav.combined.labeled.2025.rds")
+levels(ofav.combined.labeled)
+my_levels <- c("Gastrodermis (Algal-hosting cells)", "Gastrodermis_1", "Gastrodermis_2", "Gastrodermis_3", "Gastrodermis_4", "Epidermis", "Calicoblastic Cells", "Cnidocytes", "Neurons_1", "Neurons_2", "Neurons_3", "Gland_1", "Gland_2", "Gland_3", "Immune", "Germline (sperm)", "Breviolum-hosting Cells", "Durusdinium-hosting Cells", "Extracellular Breviolum")
+ofav.combined.labeled$celltypes <- my_levels[Idents(ofav.combined.labeled)]
+ofav.combined.labeled$time_cluster <- paste0(ofav.combined.labeled$orig.ident, "_", ofav.combined.labeled$celltypes)
+Idents(ofav.combined.labeled) <- "time_cluster"
+levels(ofav.combined.labeled)
+
+# Extract all cluster-time labels
+all_idents <- levels(ofav.combined.labeled)
+
+# Parse base identity and timepoint
+cluster_time_table <- data.frame(
+  full_ident = all_idents,
+  timepoint = str_extract(all_idents, "T[0357]"),
+  base_cluster = gsub("^Ofav-T[0357]-T_", "", all_idents)
+)
+
+unique_clusters <- unique(cluster_time_table$base_cluster)
+
+# Define empty tibble template matching FindMarkers output + extra columns
+empty_markers <- tibble(
+  gene = character(),
+  p_val = numeric(),
+  avg_log2FC = numeric(),
+  pct.1 = numeric(),
+  pct.2 = numeric(),
+  p_val_adj = numeric(),
+  marker_type = character(),
+  cluster = character()
+)
+
+all_markers <- list()
+
+for (clust in unique_clusters) {
+  message("Processing: ", clust)
+  
+  tp_ids <- cluster_time_table %>%
+    filter(base_cluster == clust) %>%
+    pull(full_ident)
+  names(tp_ids) <- str_extract(tp_ids, "T[0357]")
+  
+  cluster_markers <- list()
+  
+  if (!"T0" %in% names(tp_ids)) next
+  
+  # Healthy (T0 vs T7)
+  if ("T7" %in% names(tp_ids)) {
+    healthy <- FindMarkers(ofav.combined.labeled,
+                           ident.1 = tp_ids["T0"], ident.2 = tp_ids["T7"],
+                           only.pos = TRUE, min.pct = 0.1, min.diff.pct = 0.1,
+                           logfc.threshold = 0.1) %>%
+      as.data.frame() %>%
+      rownames_to_column("gene") %>%
+      as_tibble() %>%
+      filter(p_val_adj < 0.05) %>%
+      mutate(marker_type = "healthy", cluster = clust)
+    if (nrow(healthy) == 0) healthy <- empty_markers
+  } else {
+    healthy <- empty_markers
+  }
+  cluster_markers$healthy <- healthy
+  
+  # Early (T3 vs T0)
+  if ("T3" %in% names(tp_ids)) {
+    early <- FindMarkers(ofav.combined.labeled,
+                         ident.1 = tp_ids["T3"], ident.2 = tp_ids["T0"],
+                         only.pos = TRUE, min.pct = 0.1, min.diff.pct = 0.1,
+                         logfc.threshold = 0.1) %>%
+      as.data.frame() %>%
+      rownames_to_column("gene") %>%
+      as_tibble() %>%
+      filter(p_val_adj < 0.05)
+    if (nrow(early) == 0) {
+      early <- empty_markers
+    } else if (nrow(healthy) > 0) {
+      early <- early[!early$gene %in% healthy$gene, ]
+    }
+    early <- early %>% mutate(marker_type = "early", cluster = clust)
+  } else {
+    early <- empty_markers
+  }
+  cluster_markers$early <- early
+  
+  # Late (T5 vs T0)
+  if ("T5" %in% names(tp_ids)) {
+    late <- FindMarkers(ofav.combined.labeled,
+                        ident.1 = tp_ids["T5"], ident.2 = tp_ids["T0"],
+                        only.pos = TRUE, min.pct = 0.1, min.diff.pct = 0.1,
+                        logfc.threshold = 0.1) %>%
+      as.data.frame() %>%
+      rownames_to_column("gene") %>%
+      as_tibble() %>%
+      filter(p_val_adj < 0.05)
+    if (nrow(late) == 0) {
+      late <- empty_markers
+    } else {
+      if (nrow(early) > 0) late <- late[!late$gene %in% early$gene, ]
+      if (nrow(healthy) > 0) late <- late[!late$gene %in% healthy$gene, ]
+    }
+    late <- late %>% mutate(marker_type = "late", cluster = clust)
+  } else {
+    late <- empty_markers
+  }
+  cluster_markers$late <- late
+  
+  # Bleaching (T7 vs T0)
+  if ("T7" %in% names(tp_ids)) {
+    bleach <- FindMarkers(ofav.combined.labeled,
+                          ident.1 = tp_ids["T7"], ident.2 = tp_ids["T0"],
+                          only.pos = TRUE, min.pct = 0.1, min.diff.pct = 0.1,
+                          logfc.threshold = 0.1) %>%
+      as.data.frame() %>%
+      rownames_to_column("gene") %>%
+      as_tibble() %>%
+      filter(p_val_adj < 0.05)
+    if (nrow(bleach) == 0) {
+      bleach <- empty_markers
+    } else {
+      exclude_genes <- unique(c(healthy$gene, early$gene, late$gene))
+      bleach <- bleach[!bleach$gene %in% exclude_genes, ]
+    }
+    bleach <- bleach %>% mutate(marker_type = "bleaching", cluster = clust)
+  } else {
+    bleach <- empty_markers
+  }
+  cluster_markers$bleaching <- bleach
+  
+  all_markers[[clust]] <- bind_rows(cluster_markers)
+}
+
+# Combine and deduplicate, prioritize healthy > early > late > bleaching
+final_markers <- bind_rows(all_markers) %>%
+  mutate(marker_type = factor(marker_type, levels = c("healthy", "early", "late", "bleaching"))) %>%
+  arrange(cluster, gene, marker_type) %>%
+  group_by(cluster, gene) %>%
+  dplyr::slice(1) %>%
+  ungroup()
+
+write_csv(final_markers, "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/bleaching_cellcluster_markers.csv")
+```
+
+```{r}
+ofav.combined.labeled <- readRDS("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/ofav.combined.labeled.2025.rds")
+cluster_map <- c(
+  "Gastrodermis_1" = "Gastrodermis",
+  "Epidermis" = "Epidermis",
+  "Extracellular Breviolum" = "Extracellular Breviolum",
+  "Breviolum-hosting Cells" = "Breviolum-hosting Cells",
+  "Calicoblastic Cells" = "Calicoblastic Cells",
+  "Neurons_1" = "Neurons",
+  "Gastrodermis (Algal-hosting cells)" = "Gastrodermis",
+  "Gland_1" = "Gland",
+  "Neurons_2" = "Neurons",
+  "Gastrodermis_2" = "Gastrodermis",
+  "Germline (sperm)" = "Germline (sperm)",
+  "Gland_2" = "Gland",
+  "Neurons_3" = "Neurons",
+  "Gastrodermis_3" = "Gastrodermis",
+  "Durusdinium-hosting Cells" = "Durusdinium",
+  "Gland_3" = "Gland",
+  "Immune" = "Immune",
+  "Gastrodermis_4" = "Gastrodermis",
+  "Cnidocytes" = "Cnidocytes"
+)
+
+# Get current identities
+current_idents <- Idents(ofav.combined.labeled)
+
+# Map to supercluster
+superclusters <- cluster_map[current_idents]
+
+# Assign back to object
+Idents(ofav.combined.labeled) <- superclusters
+unique(levels(ofav.combined.labeled))
+my_levels <- c("Gastrodermis", "Epidermis", "Calicoblastic Cells", "Neurons", "Gland", "Durusdinium", "Cnidocytes", "Immune", "Germline (sperm)", "Breviolum-hosting Cells", "Extracellular Breviolum")
+
+ofav.combined.labeled$celltypes <- my_levels[Idents(ofav.combined.labeled)]
+ofav.combined.labeled$time_cluster <- paste0(ofav.combined.labeled$orig.ident, "_", ofav.combined.labeled$celltypes)
+Idents(ofav.combined.labeled) <- "time_cluster"
+levels(ofav.combined.labeled)
+
+# Extract all cluster-time labels
+all_idents <- levels(ofav.combined.labeled)
+
+# Parse base identity and timepoint
+cluster_time_table <- data.frame(
+  full_ident = all_idents,
+  timepoint = str_extract(all_idents, "T[0357]"),
+  base_cluster = gsub("^Ofav-T[0357]-T_", "", all_idents)
+)
+
+unique_clusters <- unique(cluster_time_table$base_cluster)
+
+# Define empty tibble template matching FindMarkers output + extra columns
+empty_markers <- tibble(
+  gene = character(),
+  p_val = numeric(),
+  avg_log2FC = numeric(),
+  pct.1 = numeric(),
+  pct.2 = numeric(),
+  p_val_adj = numeric(),
+  marker_type = character(),
+  cluster = character()
+)
+
+all_markers <- list()
+
+for (clust in unique_clusters) {
+  message("Processing: ", clust)
+  
+  tp_ids <- cluster_time_table %>%
+    filter(base_cluster == clust) %>%
+    pull(full_ident)
+  names(tp_ids) <- str_extract(tp_ids, "T[0357]")
+  
+  cluster_markers <- list()
+  
+  if (!"T0" %in% names(tp_ids)) next
+  
+  # Healthy (T0 vs T7)
+  if ("T7" %in% names(tp_ids)) {
+    healthy <- FindMarkers(ofav.combined.labeled,
+                           ident.1 = tp_ids["T0"], ident.2 = tp_ids["T7"],
+                           only.pos = TRUE, min.pct = 0.1, min.diff.pct = 0.1,
+                           logfc.threshold = 0.1) %>%
+      as.data.frame() %>%
+      rownames_to_column("gene") %>%
+      as_tibble() %>%
+      filter(p_val_adj < 0.05) %>%
+      mutate(marker_type = "healthy", cluster = clust)
+    if (nrow(healthy) == 0) healthy <- empty_markers
+  } else {
+    healthy <- empty_markers
+  }
+  cluster_markers$healthy <- healthy
+  
+  # Early (T3 vs T0)
+  if ("T3" %in% names(tp_ids)) {
+    early <- FindMarkers(ofav.combined.labeled,
+                         ident.1 = tp_ids["T3"], ident.2 = tp_ids["T0"],
+                         only.pos = TRUE, min.pct = 0.1, min.diff.pct = 0.1,
+                         logfc.threshold = 0.1) %>%
+      as.data.frame() %>%
+      rownames_to_column("gene") %>%
+      as_tibble() %>%
+      filter(p_val_adj < 0.05)
+    if (nrow(early) == 0) {
+      early <- empty_markers
+    } else if (nrow(healthy) > 0) {
+      early <- early[!early$gene %in% healthy$gene, ]
+    }
+    early <- early %>% mutate(marker_type = "early", cluster = clust)
+  } else {
+    early <- empty_markers
+  }
+  cluster_markers$early <- early
+  
+  # Late (T5 vs T0)
+  if ("T5" %in% names(tp_ids)) {
+    late <- FindMarkers(ofav.combined.labeled,
+                        ident.1 = tp_ids["T5"], ident.2 = tp_ids["T0"],
+                        only.pos = TRUE, min.pct = 0.1, min.diff.pct = 0.1,
+                        logfc.threshold = 0.1) %>%
+      as.data.frame() %>%
+      rownames_to_column("gene") %>%
+      as_tibble() %>%
+      filter(p_val_adj < 0.05)
+    if (nrow(late) == 0) {
+      late <- empty_markers
+    } else {
+      if (nrow(early) > 0) late <- late[!late$gene %in% early$gene, ]
+      if (nrow(healthy) > 0) late <- late[!late$gene %in% healthy$gene, ]
+    }
+    late <- late %>% mutate(marker_type = "late", cluster = clust)
+  } else {
+    late <- empty_markers
+  }
+  cluster_markers$late <- late
+  
+  # Bleaching (T7 vs T0)
+  if ("T7" %in% names(tp_ids)) {
+    bleach <- FindMarkers(ofav.combined.labeled,
+                          ident.1 = tp_ids["T7"], ident.2 = tp_ids["T0"],
+                          only.pos = TRUE, min.pct = 0.1, min.diff.pct = 0.1,
+                          logfc.threshold = 0.1) %>%
+      as.data.frame() %>%
+      rownames_to_column("gene") %>%
+      as_tibble() %>%
+      filter(p_val_adj < 0.05)
+    if (nrow(bleach) == 0) {
+      bleach <- empty_markers
+    } else {
+      exclude_genes <- unique(c(healthy$gene, early$gene, late$gene))
+      bleach <- bleach[!bleach$gene %in% exclude_genes, ]
+    }
+    bleach <- bleach %>% mutate(marker_type = "bleaching", cluster = clust)
+  } else {
+    bleach <- empty_markers
+  }
+  cluster_markers$bleaching <- bleach
+  
+  all_markers[[clust]] <- bind_rows(cluster_markers)
+}
+
+# Combine and deduplicate, prioritize healthy > early > late > bleaching
+final_markers <- bind_rows(all_markers) %>%
+  mutate(marker_type = factor(marker_type, levels = c("healthy", "early", "late", "bleaching"))) %>%
+  arrange(cluster, gene, marker_type) %>%
+  group_by(cluster, gene) %>%
+  dplyr::slice(1) %>%
+  ungroup()
+
+write_csv(final_markers, "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/bleaching_supercluster_markers.csv")
+```
+
+# Table of cell counts per sample - maybe add to figure with umaps instead
+```{r}
+cell_counts <- table(ofav.combined.labeled$orig.ident)
+print(cell_counts)
+```
+
+# Symbiont expression compared to host
+```{r}
+library(ggplot2)
+data <- read.csv("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/cluster_symbionts_expression3.csv", header = T, row.names = 1, check.names = F)
+data_transposed <- t(data)
+data_df <- as.data.frame(data_transposed)
+data_df$Cluster <- (rownames(data_df))
+library(tidyr)
+data_long <- pivot_longer(data_df, cols = -Cluster, names_to = "Reference", values_to = "Value")
+library(ggplot2)
+my_levels <- c("Gastrodermis (Algal-hosting cells)", "Gastrodermis_1", "Gastrodermis_2", "Gastrodermis_3", "Gastrodermis_4", "Epidermis", "Calicoblastic Cells", "Cnidocytes", "Neurons_1", "Neurons_2", "Neurons_3", "Gland_1", "Gland_2", "Gland_3", "Immune", "Germline (sperm)", "Breviolum-hosting Cells", "Durusdinium-hosting Cells", "Extracellular Breviolum")
+symbiont_exp <- ggplot(data_long, aes(x = factor(Cluster, levels = my_levels), y = Value, fill = Reference)) +
+  geom_bar(stat = "identity") +
+  labs(title = "% of Gene Expression from each Reference",
+       x = "Cluster ID",
+       y = "% Gene Expression") +
+  theme_bw() +  scale_y_continuous(expand = c(0, 0)) +
+  scale_fill_manual(values = c("coral", "darkgoldenrod1", "darkgoldenrod4", "cornsilk3"), breaks=c('Coral', 'Breviolum', 'Durusdinium', 'Cladocopium')) +
+  scale_x_discrete(guide = guide_axis(angle = 90))
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/symbiont_expression.svg", symbiont_exp, height=7, width = 10)
+```
+
+- Heatmap of cell cluster markers
+  - sig genes
+```{r}
+genes_to_use <- c("QW917-029111",
+"QW917-003567",
+"QW917-022625",
+"QW917-024964",
+"QW917-003749",
+"QW917-006349",
+"QW917-002686",
+"QW917-002688",
+"QW917-023314",
+"QW917-010184",
+"QW917-023505",
+"QW917-000590",
+"QW917-000592",
+"QW917-036248",
+"QW917-030220",
+"QW917-033276",
+"QW917-033279",
+"QW917-033275",
+"QW917-022246",
+"QW917-024491",
+"QW917-021831",
+"QW917-014912",
+"QW917-020885",
+"QW917-021830",
+"QW917-011145",
+"QW917-016491",
+"QW917-017799",
+"QW917-002944",
+"QW917-001602",
+"QW917-008447",
+"QW917-010146",
+"QW917-010145",
+"QW917-036332",
+"QW917-036331",
+"QW917-030981",
+"QW917-016596",
+"QW917-017140",
+"QW917-017141",
+"QW917-017139",
+"QW917-001889",
+"QW917-016123",
+"QW917-036205",
+"QW917-029646",
+"QW917-016127",
+"QW917-036204",
+"QW917-007174",
+"QW917-019305",
+"QW917-024399",
+"QW917-034116",
+"QW917-002905",
+"QW917-014480",
+"QW917-011037",
+"QW917-035997",
+"QW917-011108",
+"QW917-008372",
+"QW917-026657",
+"QW917-031968",
+"QW917-024171",
+"QW917-034154",
+"QW917-034906",
+"QW917-017942",
+"QW917-031495",
+"QW917-008226",
+"QW917-033413",
+"QW917-033692",
+"QW917-030411",
+"QW917-030529",
+"QW917-036231",
+"QW917-036230",
+"QW917-011121",
+"QW917-032434",
+"QW917-021556",
+"QW917-035159",
+"QW917-024963",
+"QW917-016688",
+"QW917-026948",
+"QW917-024279",
+"QW917-000682",
+"QW917-008789",
+"QW917-001780",
+"symbB.v1.2.025478",
+"symbB.v1.2.001983",
+"symbB.v1.2.014626",
+"symbB.v1.2.000589",
+"symbB.v1.2.032429",
+"g30043",
+"g20747",
+"g28794",
+"g19120",
+"g18232",
+"QW917-026433",
+"QW917-007665",
+"symbB.v1.2.040993",
+"symbB.v1.2.014253",
+"symbB.v1.2.027336")
+
+ofav.combined.labeled.hm <- ofav.combined.labeled
+DefaultAssay(ofav.combined.labeled.hm) <- "RNA"
+all.genes <- rownames(ofav.combined.labeled.hm)
+ofav.combined.labeled.hm<- ScaleData(ofav.combined.labeled.hm, features = all.genes)
+
+my_levels <- c("Gastrodermis (Algal-hosting cells)", "Gastrodermis_1", "Gastrodermis_2", "Gastrodermis_3", "Gastrodermis_4", "Epidermis", "Calicoblastic Cells", "Cnidocytes", "Neurons_1", "Neurons_2", "Neurons_3", "Gland_1", "Gland_2", "Gland_3", "Immune", "Germline (sperm)", "Breviolum-hosting Cells", "Durusdinium-hosting Cells", "Extracellular Breviolum")
+
+colors_hm <- c("darkolivegreen","darkolivegreen1","darkolivegreen2","darkolivegreen3","darkolivegreen4","seagreen1","darkorchid4","plum1","deepskyblue3","deepskyblue4","deepskyblue2","darkorange1","darkorange2","darkorange","darkkhaki","bisque3","darkgoldenrod3","darkgoldenrod4","darkgoldenrod1")
+
+ofav.combined.labeled.hm@active.ident <- factor(x = ofav.combined.labeled.hm@active.ident, levels = my_levels)
+ofav.combined.labeled.hm@meta.data[,"seurat_clusters",drop=FALSE] %>% add_rownames() %>% group_by(seurat_clusters) %>% slice_sample(n= 1000) -> index
+
+
+hm <- DoHeatmap(ofav.combined.labeled.hm, features = genes_to_use,label=T,cells=index$rowname, draw.lines=F, lines.width=2, group.colors=colors_hm, angle=90) + 
+  scale_fill_gradient2(
+    low = "white",
+    mid = "#fffff2", 
+    high = "red",
+    midpoint = 0.5  
+  )
+
+hm
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/heatmap_cluster_sig.png", hm, width=15, height=30)
+```
+- cluster lfc
+```{r}
+genes_to_use <- c("QW917-029111",
+"QW917-003567",
+"QW917-022625",
+"QW917-010131",
+"QW917-030646",
+"QW917-016859",
+"QW917-000010",
+"QW917-005962",
+"QW917-032073",
+"QW917-006349",
+"QW917-001282",
+"QW917-023505",
+"QW917-000590",
+"QW917-000592",
+"QW917-024168",
+"QW917-033276",
+"QW917-033279",
+"QW917-033275",
+"QW917-015093",
+"QW917-024491",
+"QW917-021831",
+"QW917-014912",
+"QW917-020885",
+"QW917-021830",
+"QW917-011145",
+"QW917-005606",
+"QW917-024321",
+"QW917-016491",
+"QW917-002944",
+"QW917-031915",
+"QW917-010146",
+"QW917-010145",
+"QW917-036332",
+"QW917-036331",
+"QW917-030981",
+"QW917-016596",
+"QW917-017140",
+"QW917-014975",
+"QW917-035574",
+"QW917-016643",
+"QW917-016123",
+"QW917-036205",
+"QW917-029646",
+"QW917-016127",
+"QW917-036204",
+"QW917-024613",
+"QW917-019877",
+"QW917-002904",
+"QW917-002905",
+"QW917-026376",
+"QW917-030766",
+"QW917-014480",
+"QW917-019811",
+"QW917-011037",
+"QW917-032843",
+"QW917-026657",
+"QW917-031968",
+"QW917-024171",
+"QW917-034154",
+"QW917-034906",
+"QW917-017942",
+"QW917-031495",
+"QW917-008226",
+"QW917-033413",
+"QW917-033692",
+"QW917-030411",
+"QW917-030529",
+"QW917-036231",
+"QW917-036230",
+"QW917-011121",
+"QW917-032434",
+"QW917-008477",
+"QW917-021556",
+"QW917-035205",
+"QW917-035159",
+"QW917-026948",
+"QW917-008288",
+"QW917-024279",
+"QW917-000682",
+"QW917-008789",
+"symbB.v1.2.025478",
+"symbB.v1.2.001983",
+"symbB.v1.2.014626",
+"symbB.v1.2.000589",
+"symbB.v1.2.032429",
+"g30043",
+"g20747",
+"g28794",
+"g19120",
+"g18232",
+"QW917-026433",
+"QW917-007665",
+"symbB.v1.2.040993",
+"symbB.v1.2.014253",
+"symbB.v1.2.027336")
+
+ofav.combined.labeled.hm <- ofav.combined.labeled
+DefaultAssay(ofav.combined.labeled.hm) <- "RNA"
+all.genes <- rownames(ofav.combined.labeled.hm)
+ofav.combined.labeled.hm<- ScaleData(ofav.combined.labeled.hm, features = all.genes)
+
+my_levels <- c("Gastrodermis (Algal-hosting cells)", "Gastrodermis_1", "Gastrodermis_2", "Gastrodermis_3", "Gastrodermis_4", "Epidermis", "Calicoblastic Cells", "Cnidocytes", "Neurons_1", "Neurons_2", "Neurons_3", "Gland_1", "Gland_2", "Gland_3", "Immune", "Germline (sperm)", "Breviolum-hosting Cells", "Durusdinium-hosting Cells", "Extracellular Breviolum")
+
+colors_hm <- c("darkolivegreen","darkolivegreen1","darkolivegreen2","darkolivegreen3","darkolivegreen4","seagreen1","darkorchid4","plum1","deepskyblue3","deepskyblue4","deepskyblue2","darkorange1","darkorange2","darkorange","darkkhaki","bisque3","darkgoldenrod3","darkgoldenrod4","darkgoldenrod1")
+
+ofav.combined.labeled.hm@active.ident <- factor(x = ofav.combined.labeled.hm@active.ident, levels = my_levels)
+ofav.combined.labeled.hm@meta.data[,"seurat_clusters",drop=FALSE] %>% add_rownames() %>% group_by(seurat_clusters) %>% slice_sample(n= 10) -> index
+
+hm <- DoHeatmap(ofav.combined.labeled.hm, features = genes_to_use,label=T,cells=index$rowname, draw.lines=T, lines.width=2, group.colors=colors_hm, angle=90) + scale_fill_gradientn(colors = c("#fffff2", "red"))
+
+hm <- DoHeatmap(ofav.combined.labeled.hm, features = genes_to_use,label=T,cells=index$rowname, draw.lines=F, group.colors=colors_hm, angle=90) + 
+  scale_fill_gradient2(
+    low = "#fffff2",
+    mid = "#FF8079", 
+    high = "red",
+    midpoint = 1  
+  )
+
+hm
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/heatmap_cluster_lfc.svg", hm, height = 25, width=30)
+```
+
+
+
+
+
+
+- Super cluster lfc
+```{r}
+cluster_map <- c(
+  "Gastrodermis_1" = "Gastrodermis",
+  "Epidermis" = "Epidermis",
+  "Extracellular Breviolum" = "Extracellular Breviolum",
+  "Breviolum-hosting Cells" = "Breviolum-hosting Cells",
+  "Calicoblastic Cells" = "Calicoblastic Cells",
+  "Neurons_1" = "Neurons",
+  "Gastrodermis (Algal-hosting cells)" = "Gastrodermis",
+  "Gland_1" = "Gland",
+  "Neurons_2" = "Neurons",
+  "Gastrodermis_2" = "Gastrodermis",
+  "Germline (sperm)" = "Germline (sperm)",
+  "Gland_2" = "Gland",
+  "Neurons_3" = "Neurons",
+  "Gastrodermis_3" = "Gastrodermis",
+  "Durusdinium-hosting Cells" = "Durusdinium",
+  "Gland_3" = "Gland",
+  "Immune" = "Immune",
+  "Gastrodermis_4" = "Gastrodermis",
+  "Cnidocytes" = "Cnidocytes"
+)
+
+# Get current identities
+current_idents <- Idents(ofav.combined.labeled)
+
+# Map to supercluster
+superclusters <- cluster_map[current_idents]
+
+# Assign back to object
+Idents(ofav.combined.labeled) <- superclusters
+Idents(ofav.combined.labeled)
+
+genes_to_use <- c("QW917-006349",
+"QW917-027832",
+"QW917-023314",
+"QW917-010184",
+"QW917-002686",
+"QW917-010146",
+"QW917-010145",
+"QW917-036332",
+"QW917-036331",
+"QW917-030981",
+"QW917-005606",
+"QW917-024321",
+"QW917-016491",
+"QW917-002944",
+"QW917-031915",
+"QW917-026433",
+"QW917-017141",
+"QW917-017139",
+"QW917-001889",
+"QW917-026657",
+"QW917-031968",
+"QW917-024171",
+"QW917-034154",
+"QW917-034906",
+"QW917-001282",
+"QW917-029111",
+"QW917-003567",
+"QW917-022625",
+"QW917-023505",
+"QW917-007665",
+"QW917-032434",
+"QW917-021556",
+"QW917-035159",
+"QW917-024963",
+"QW917-016688",
+"QW917-021831",
+"QW917-014912",
+"QW917-020885",
+"QW917-021830",
+"QW917-011145",
+"QW917-030411",
+"QW917-030529",
+"QW917-036231",
+"QW917-036230",
+"QW917-011121",
+"QW917-030766",
+"QW917-014480",
+"QW917-019811",
+"QW917-011037",
+"QW917-032843",
+"QW917-016596",
+"QW917-017140",
+"QW917-014975",
+"QW917-035574",
+"QW917-016643")
+
+ofav.combined.labeled.hm <- ofav.combined.labeled
+DefaultAssay(ofav.combined.labeled.hm) <- "RNA"
+all.genes <- rownames(ofav.combined.labeled.hm)
+ofav.combined.labeled.hm<- ScaleData(ofav.combined.labeled.hm, features = all.genes)
+
+my_levels <- c("Gastrodermis", "Epidermis", "Calicoblastic Cells", "Cnidocytes", "Neurons", "Gland", "Immune", "Germline (sperm)", "Breviolum-hosting Cells", "Durusdinium", "Extracellular Breviolum")
+
+colors_hm <- c("darkolivegreen","seagreen1","darkorchid4","plum1","deepskyblue3","darkorange1","darkkhaki","bisque3","darkgoldenrod3","darkgoldenrod4","darkgoldenrod1")
+
+ofav.combined.labeled.hm@active.ident <- factor(x = ofav.combined.labeled.hm@active.ident, levels = my_levels)
+ofav.combined.labeled.hm@meta.data[,"seurat_clusters",drop=FALSE] %>% add_rownames() %>% group_by(seurat_clusters) %>% slice_sample(n= 500) -> index
+
+hm <- DoHeatmap(ofav.combined.labeled.hm, features = genes_to_use,label=T,cells=index$rowname, draw.lines=T, lines.width=2, group.colors=colors_hm, angle=90) + scale_fill_gradientn(colors = c("#fffff2", "red"))
+
+hm <- DoHeatmap(ofav.combined.labeled.hm, features = genes_to_use,label=T,cells=index$rowname, draw.lines=T, lines.width=2, group.colors=colors_hm, angle=90) + 
+  scale_fill_gradient2(
+    low = "#fffff2",
+    high = "red",
+    midpoint = -0.5  
+  )
+
+hm
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/heatmap_supercluster_lfc.svg", hm, height = 2.5, width=3.0)
+```
+
+# Heat-stress heatmap
+##Heatmap
+```{r}
+ofav.combined.labeled <- readRDS("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/ofav.combined.labeled.2025.rds")
+genes_to_use <- c("QW917-005606","QW917-017006","QW917-008447","QW917-023414","QW917-015074","QW917-006430","QW917-015050","QW917-015057","QW917-006427","QW917-010727","QW917-015085","QW917-015093","QW917-015086","QW917-002182","QW917-024491","QW917-007665","QW917-010171","QW917-015084","QW917-005903","QW917-013386","QW917-022246","QW917-030399","symbB.v1.2.040993","QW917-029766","QW917-036205","QW917-036204","QW917-029646","QW917-030646","QW917-017942","QW917-023065","QW917-017802","QW917-007874","QW917-010131","QW917-002685","QW917-024964","QW917-016488","QW917-029111","QW917-003567","QW917-031733","QW917-003749","QW917-029192","QW917-017291","QW917-024490","QW917-033447","QW917-022625","QW917-025659","QW917-016021","QW917-010456","QW917-033785","QW917-010212","QW917-028556","QW917-008245","QW917-006873","QW917-017502","QW917-016489","QW917-009632","QW917-008509","QW917-002519","QW917-025475","QW917-015177","QW917-018368","QW917-026433","QW917-002663","QW917-018369","QW917-019148","QW917-025271","QW917-030974","QW917-016878","QW917-016501","QW917-007406","QW917-022132","QW917-028389","QW917-008368","QW917-006349","QW917-033275","QW917-013367","QW917-004807","QW917-013401","QW917-000356","QW917-016495","QW917-026774","QW917-018150","QW917-003080","QW917-024689","QW917-016859","QW917-014249","QW917-004830","QW917-011079","QW917-008044","QW917-010925","QW917-000806","QW917-032073","QW917-016496","QW917-025087","QW917-030749","QW917-036526","QW917-031955","QW917-003512","QW917-003517","QW917-031962","QW917-026897","QW917-031651")
+
+levels(ofav.combined.labeled)
+my_levels <- c("Unidentified", "Calicoblastic Cells", "Cnidocytes", "Digestive Filaments", "Epidermis", "Gastrodermis (Muscle-like)", "Gastrodermis 1", "Gastrodermis 2", "Gland 1", "Gland 2", "Gland 3", "Immune", "Neurons 1", "Neurons 2", "Neurons 3", "Precursors", "Extracellular Breviolum", "Breviolum-hosting Cells", "Durusdinium-hosting Cells")
+
+ofav.combined.labeled$seurat_clusters.Timepoints <- paste(Idents(ofav.combined.labeled), ofav.combined.labeled$orig.ident, sep = "_")
+
+ofav.combined.labeled.hm1 <- ofav.combined.labeled
+
+unique(ofav.combined.labeled.hm1$seurat_clusters.Timepoints)
+ofav.combined.labeled.hm <- ofav.combined.labeled.hm1
+rm(ofav.combined.labeled.hm1)
+Idents(ofav.combined.labeled.hm) <- "seurat_clusters.Timepoints"
+levels(ofav.combined.labeled.hm)
+DefaultAssay(ofav.combined.labeled.hm) <- "RNA"
+all.genes <- rownames(ofav.combined.labeled.hm)
+ofav.combined.labeled.hm<- ScaleData(ofav.combined.labeled.hm, features = all.genes)
+
+
+my_levels <- c("Gastrodermis (Algal-hosting cells)_Ofav-T0-T","Gastrodermis_1_Ofav-T0-T","Gastrodermis_2_Ofav-T0-T","Gastrodermis_3_Ofav-T0-T","Gastrodermis_4_Ofav-T0-T","Epidermis_Ofav-T0-T","Calicoblastic Cells_Ofav-T0-T","Cnidocytes_Ofav-T0-T","Neurons_1_Ofav-T0-T","Neurons_2_Ofav-T0-T","Neurons_3_Ofav-T0-T","Gland_1_Ofav-T0-T","Gland_2_Ofav-T0-T","Gland_3_Ofav-T0-T","Immune_Ofav-T0-T","Germline (sperm)_Ofav-T0-T","Breviolum-hosting Cells_Ofav-T0-T","Durusdinium-hosting Cells_Ofav-T0-T","Extracellular Breviolum_Ofav-T0-T","Gastrodermis (Algal-hosting cells)_Ofav-T3-T","Gastrodermis_1_Ofav-T3-T","Gastrodermis_2_Ofav-T3-T","Gastrodermis_3_Ofav-T3-T","Gastrodermis_4_Ofav-T3-T","Epidermis_Ofav-T3-T","Calicoblastic Cells_Ofav-T3-T","Cnidocytes_Ofav-T3-T","Neurons_1_Ofav-T3-T","Neurons_2_Ofav-T3-T","Neurons_3_Ofav-T3-T","Gland_1_Ofav-T3-T","Gland_2_Ofav-T3-T","Gland_3_Ofav-T3-T","Immune_Ofav-T3-T","Germline (sperm)_Ofav-T3-T","Breviolum-hosting Cells_Ofav-T3-T","Durusdinium-hosting Cells_Ofav-T3-T","Extracellular Breviolum_Ofav-T3-T","Gastrodermis (Algal-hosting cells)_Ofav-T5-T","Gastrodermis_1_Ofav-T5-T","Gastrodermis_2_Ofav-T5-T","Gastrodermis_3_Ofav-T5-T","Gastrodermis_4_Ofav-T5-T","Epidermis_Ofav-T5-T","Calicoblastic Cells_Ofav-T5-T","Cnidocytes_Ofav-T5-T","Neurons_1_Ofav-T5-T","Neurons_2_Ofav-T5-T","Neurons_3_Ofav-T5-T","Gland_1_Ofav-T5-T","Gland_2_Ofav-T5-T","Gland_3_Ofav-T5-T","Immune_Ofav-T5-T","Germline (sperm)_Ofav-T5-T","Breviolum-hosting Cells_Ofav-T5-T","Durusdinium-hosting Cells_Ofav-T5-T","Extracellular Breviolum_Ofav-T5-T","Gastrodermis (Algal-hosting cells)_Ofav-T7-T","Gastrodermis_1_Ofav-T7-T","Gastrodermis_2_Ofav-T7-T","Gastrodermis_3_Ofav-T7-T","Gastrodermis_4_Ofav-T7-T","Epidermis_Ofav-T7-T","Calicoblastic Cells_Ofav-T7-T","Cnidocytes_Ofav-T7-T","Neurons_1_Ofav-T7-T","Neurons_2_Ofav-T7-T","Neurons_3_Ofav-T7-T","Gland_1_Ofav-T7-T","Gland_2_Ofav-T7-T","Gland_3_Ofav-T7-T","Immune_Ofav-T7-T","Germline (sperm)_Ofav-T7-T","Breviolum-hosting Cells_Ofav-T7-T","Durusdinium-hosting Cells_Ofav-T7-T","Extracellular Breviolum_Ofav-T7-T")
+
+colors_hm <- c("darkolivegreen","darkolivegreen1","darkolivegreen2","darkolivegreen3","darkolivegreen4","seagreen1","darkorchid4","plum1","deepskyblue3","deepskyblue4","deepskyblue2","darkorange1","darkorange2","darkorange","darkkhaki","bisque3","darkgoldenrod3","darkgoldenrod4","darkgoldenrod1","darkolivegreen","darkolivegreen1","darkolivegreen2","darkolivegreen3","darkolivegreen4","seagreen1","darkorchid4","plum1","deepskyblue3","deepskyblue4","deepskyblue2","darkorange1","darkorange2","darkorange","darkkhaki","bisque3","darkgoldenrod3","darkgoldenrod4","darkgoldenrod1","darkolivegreen","darkolivegreen1","darkolivegreen2","darkolivegreen3","darkolivegreen4","seagreen1","darkorchid4","plum1","deepskyblue3","deepskyblue4","deepskyblue2","darkorange1","darkorange2","darkorange","darkkhaki","bisque3","darkgoldenrod3","darkgoldenrod4","darkgoldenrod1","darkolivegreen","darkolivegreen1","darkolivegreen2","darkolivegreen3","darkolivegreen4","seagreen1","darkorchid4","plum1","deepskyblue3","deepskyblue4","deepskyblue2","darkorange1","darkorange2","darkorange","darkkhaki","bisque3","darkgoldenrod3","darkgoldenrod4","darkgoldenrod1")
+
+ofav.combined.labeled.hm@active.ident <- factor(x = ofav.combined.labeled.hm@active.ident, levels = my_levels)
+
+ofav.combined.labeled.hm@meta.data[,"seurat_clusters.Timepoints",drop=FALSE] %>% add_rownames() %>% group_by(seurat_clusters.Timepoints) %>% slice_sample(n= 100) -> index
+
+hm <- DoHeatmap(ofav.combined.labeled.hm, features = genes_to_use,label=T,cells=index$rowname, draw.lines=T, lines.width=2, group.colors=colors_hm, angle=90) + NoLegend() + scale_fill_gradientn(colors = c("#AAAAF6", "#fffff2", "red")) + NoLegend()
+hm
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/Bleaching-cluster-heatmap.png", hm, height = 20, width=20)
+
+library(cowplot)  # for get_legend()
+hm <- DoHeatmap(ofav.combined.labeled.hm, features = genes_to_use,label=T,cells=index$rowname, draw.lines=T, lines.width=2, group.colors=colors_hm, angle=90) + scale_fill_gradientn(colors = c("#AAAAF6", "#fffff2", "red"))
+legend <- get_legend(hm)
+# Convert to a ggplot object so you can save it
+legend_plot <- ggdraw(legend)
+# Save as SVG
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/Bleaching-cluster-heatmap_legend.svg", legend_plot, width = 4, height = 4, units = "in")
+```
+## Super cluster-level
+```{r}
+ofav.combined.labeled <- readRDS("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/ofav.combined.labeled.2025.rds")
+cluster_map <- c(
+  "Gastrodermis_1" = "Gastrodermis",
+  "Epidermis" = "Epidermis",
+  "Extracellular Breviolum" = "Extracellular Breviolum",
+  "Breviolum-hosting Cells" = "Breviolum-hosting Cells",
+  "Calicoblastic Cells" = "Calicoblastic Cells",
+  "Neurons_1" = "Neurons",
+  "Gastrodermis (Algal-hosting cells)" = "Gastrodermis",
+  "Gland_1" = "Gland",
+  "Neurons_2" = "Neurons",
+  "Gastrodermis_2" = "Gastrodermis",
+  "Germline (sperm)" = "Germline (sperm)",
+  "Gland_2" = "Gland",
+  "Neurons_3" = "Neurons",
+  "Gastrodermis_3" = "Gastrodermis",
+  "Durusdinium-hosting Cells" = "Durusdinium",
+  "Gland_3" = "Gland",
+  "Immune" = "Immune",
+  "Gastrodermis_4" = "Gastrodermis",
+  "Cnidocytes" = "Cnidocytes"
+)
+
+# Get current identities
+current_idents <- Idents(ofav.combined.labeled)
+
+# Map to supercluster
+superclusters <- cluster_map[current_idents]
+
+# Assign back to object
+Idents(ofav.combined.labeled) <- superclusters
+Idents(ofav.combined.labeled)
+
+ofav.combined.labeled$seurat_clusters.Timepoints <- paste(Idents(ofav.combined.labeled), ofav.combined.labeled$orig.ident, sep = "_")
+ofav.combined.labeled.hm1 <- ofav.combined.labeled
+Idents(ofav.combined.labeled)
+
+unique(ofav.combined.labeled.hm1$seurat_clusters.Timepoints)
+ofav.combined.labeled.hm <- ofav.combined.labeled.hm1
+rm(ofav.combined.labeled.hm1)
+Idents(ofav.combined.labeled.hm) <- "seurat_clusters.Timepoints"
+levels(ofav.combined.labeled.hm)
+DefaultAssay(ofav.combined.labeled.hm) <- "RNA"
+all.genes <- rownames(ofav.combined.labeled.hm)
+ofav.combined.labeled.hm<- ScaleData(ofav.combined.labeled.hm, features = all.genes)
+
+genes_to_use <- c("QW917-005606","QW917-017942","symbB.v1.2.037890","QW917-008447","QW917-007874","QW917-013386","QW917-017802","QW917-010131","QW917-006427","QW917-024964","QW917-003749","QW917-030646","QW917-003567","QW917-024490","QW917-029192","QW917-010171","QW917-023065","QW917-017291","symbB.v1.2.040993","QW917-022625","QW917-033785","QW917-016878","QW917-005894","QW917-008368","QW917-018150","QW917-019437","QW917-019438","QW917-014572","QW917-011566","QW917-002685","QW917-018325","QW917-002688","QW917-009678","QW917-018799","QW917-013452","QW917-018305","QW917-006634","QW917-008828","QW917-033195","QW917-006021","QW917-004770","QW917-010234","QW917-025759","QW917-033575","QW917-000347","QW917-029903","QW917-028792","QW917-024082","QW917-028697","QW917-017710","QW917-029719","QW917-006209","QW917-029330","QW917-012818","QW917-030375","QW917-017800","QW917-024396","QW917-032526","QW917-017490","QW917-026917","QW917-013501","QW917-023502","QW917-001647","QW917-030278","QW917-024547","QW917-005103","QW917-006440","QW917-017815","QW917-012688","QW917-000552","QW917-033302","QW917-023906","QW917-024520","QW917-033707","QW917-027253","QW917-001660","QW917-003428","QW917-002484","QW917-026774","QW917-003080","QW917-032073","QW917-024689","QW917-000356","QW917-014249","QW917-008044","QW917-004830","QW917-017896","QW917-012855","QW917-011523","QW917-021056","QW917-002144","QW917-009852","QW917-013974","QW917-022182","QW917-014956","QW917-013001","QW917-005572","QW917-018319","QW917-027086","QW917-028767","QW917-011696","QW917-007100","QW917-000382","QW917-010948","QW917-018864","QW917-018818","QW917-003490","QW917-029982","QW917-006967","QW917-026263","QW917-017997","QW917-004438","QW917-015251","QW917-024679","QW917-010925","QW917-010138","QW917-003191","QW917-019723","QW917-005753","QW917-007733","QW917-027989","QW917-001282","QW917-006393","QW917-001013","QW917-005431","QW917-026657","QW917-016495")
+
+my_levels <- c("Gastrodermis_Ofav-T0-T","Epidermis_Ofav-T0-T","Calicoblastic Cells_Ofav-T0-T","Neurons_Ofav-T0-T","Gland_Ofav-T0-T","Durusdinium_Ofav-T0-T","Cnidocytes_Ofav-T0-T","Immune_Ofav-T0-T","Germline (sperm)_Ofav-T0-T","Breviolum-hosting Cells_Ofav-T0-T","Extracellular Breviolum_Ofav-T0-T","Gastrodermis_Ofav-T3-T","Epidermis_Ofav-T3-T","Calicoblastic Cells_Ofav-T3-T","Neurons_Ofav-T3-T","Gland_Ofav-T3-T","Durusdinium_Ofav-T3-T","Cnidocytes_Ofav-T3-T","Immune_Ofav-T3-T","Germline (sperm)_Ofav-T3-T","Breviolum-hosting Cells_Ofav-T3-T","Extracellular Breviolum_Ofav-T3-T","Gastrodermis_Ofav-T5-T","Epidermis_Ofav-T5-T","Calicoblastic Cells_Ofav-T5-T","Neurons_Ofav-T5-T","Gland_Ofav-T5-T","Durusdinium_Ofav-T5-T","Cnidocytes_Ofav-T5-T","Immune_Ofav-T5-T","Germline (sperm)_Ofav-T5-T","Breviolum-hosting Cells_Ofav-T5-T","Extracellular Breviolum_Ofav-T5-T","Gastrodermis_Ofav-T7-T","Epidermis_Ofav-T7-T","Calicoblastic Cells_Ofav-T7-T","Neurons_Ofav-T7-T","Gland_Ofav-T7-T","Durusdinium_Ofav-T7-T","Cnidocytes_Ofav-T7-T","Immune_Ofav-T7-T","Germline (sperm)_Ofav-T7-T","Breviolum-hosting Cells_Ofav-T7-T","Extracellular Breviolum_Ofav-T7-T")
+
+colors_hm <- c("darkolivegreen","seagreen1","darkorchid4","plum1","deepskyblue3","darkorange1","darkkhaki","bisque3","darkgoldenrod3","darkgoldenrod4","darkgoldenrod1", "darkolivegreen","seagreen1","darkorchid4","plum1","deepskyblue3","darkorange1","darkkhaki","bisque3","darkgoldenrod3","darkgoldenrod4","darkgoldenrod1", "darkolivegreen","seagreen1","darkorchid4","plum1","deepskyblue3","darkorange1","darkkhaki","bisque3","darkgoldenrod3","darkgoldenrod4","darkgoldenrod1", "darkolivegreen","seagreen1","darkorchid4","plum1","deepskyblue3","darkorange1","darkkhaki","bisque3","darkgoldenrod3","darkgoldenrod4","darkgoldenrod1")
+
+ofav.combined.labeled.hm@active.ident <- factor(x = ofav.combined.labeled.hm@active.ident, levels = my_levels)
+
+ofav.combined.labeled.hm@meta.data[,"seurat_clusters.Timepoints",drop=FALSE] %>% add_rownames() %>% group_by(seurat_clusters.Timepoints) %>% slice_sample(n= 500) -> index
+
+hm <- DoHeatmap(ofav.combined.labeled.hm, features = genes_to_use,label=T,cells=index$rowname, draw.lines=T, lines.width=2, group.colors=colors_hm, angle=90) + NoLegend() + scale_fill_gradientn(colors = c("#AAAAF6", "#fffff2", "red")) + NoLegend()
+hm
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/Bleaching-supercluster-heatmap.png", hm, height = 15, width=20)
+```
+
+## Dot Plot of Symbiont Front Loading + Healthy Breviolum and Gatsrodermal Cells
+- Took all genes with pct.1 above 50%, order by COG
+```{r}
+ofav.combined.labeled <- readRDS("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/ofav.combined.labeled.2025.rds")
+ofav.combined.labeled.subset <- subset(x = ofav.combined.labeled, idents = c("Breviolum-hosting Cells", "Durusdinium-hosting Cells", "Gastrodermis (Algal-hosting cells)","Gastrodermis_1","Gastrodermis_2","Gastrodermis_3","Gastrodermis_4"))
+my_levels <- c("Ofav-T0-T", "Ofav-T3-T", "Ofav-T5-T", "Ofav-T7-T")
+ofav.combined.labeled.subset@meta.data$orig.ident <- factor(x = ofav.combined.labeled.subset@meta.data$orig.ident, levels = my_levels)
+levels(ofav.combined.labeled.subset@meta.data$orig.ident)
+
+DefaultAssay(ofav.combined.labeled.subset) <- "RNA"
+ofav.combined.labeled.subset$seurat_clusters.Timepoints <- paste(Idents(ofav.combined.labeled.subset), ofav.combined.labeled.subset$orig.ident, sep = "_")
+ofav.combined.labeled.subset$seurat_clusters <- Idents(ofav.combined.labeled.subset)
+Idents(ofav.combined.labeled.subset) <- "seurat_clusters.Timepoints"
+my_levels <- c("Breviolum-hosting Cells_Ofav-T0-T", "Breviolum-hosting Cells_Ofav-T3-T", "Breviolum-hosting Cells_Ofav-T5-T", "Breviolum-hosting Cells_Ofav-T7-T", "Durusdinium-hosting Cells_Ofav-T0-T", "Durusdinium-hosting Cells_Ofav-T3-T", "Durusdinium-hosting Cells_Ofav-T5-T", "Durusdinium-hosting Cells_Ofav-T7-T", "Gastrodermis (Algal-hosting cells)_Ofav-T0-T", "Gastrodermis (Algal-hosting cells)_Ofav-T3-T", "Gastrodermis (Algal-hosting cells)_Ofav-T5-T", "Gastrodermis (Algal-hosting cells)_Ofav-T7-T", "Gastrodermis_1_Ofav-T0-T", "Gastrodermis_1_Ofav-T3-T", "Gastrodermis_1_Ofav-T5-T", "Gastrodermis_1_Ofav-T7-T", "Gastrodermis_2_Ofav-T0-T", "Gastrodermis_2_Ofav-T3-T", "Gastrodermis_2_Ofav-T5-T", "Gastrodermis_2_Ofav-T7-T", "Gastrodermis_3_Ofav-T0-T", "Gastrodermis_3_Ofav-T3-T", "Gastrodermis_3_Ofav-T5-T", "Gastrodermis_3_Ofav-T7-T", "Gastrodermis_4_Ofav-T0-T", "Gastrodermis_4_Ofav-T3-T", "Gastrodermis_4_Ofav-T5-T", "Gastrodermis_4_Ofav-T7-T")
+ofav.combined.labeled.subset@active.ident <- factor(x = ofav.combined.labeled.subset@active.ident, levels = my_levels)
+markers.to.plot <- c("QW917-028232","QW917-008441","QW917-025759","QW917-002688","QW917-008780","QW917-003326","QW917-035714","QW917-008443","QW917-006349","QW917-020637","QW917-030668","QW917-024271","QW917-002686","QW917-018244","QW917-018851","QW917-029254","QW917-003080","QW917-024689","QW917-018150","QW917-010381","QW917-005894","QW917-026114","QW917-028062","QW917-031802","QW917-023314","QW917-014250","QW917-002685","QW917-030101","QW917-013627","QW917-022673","QW917-010242","QW917-013452","QW917-008364","QW917-023319","QW917-022088","QW917-027187","QW917-008828","QW917-011254","QW917-012688","QW917-033575","QW917-013752","QW917-032489","QW917-009336","QW917-018325","QW917-029992","QW917-017432","QW917-003054","QW917-023845","QW917-033195","QW917-018353","QW917-001525","QW917-015206","QW917-011241","QW917-008383","QW917-014705","QW917-032073","QW917-003256","QW917-013974","QW917-007699")
+
+dp<- DotPlot(ofav.combined.labeled.subset, features = markers.to.plot, cols = c("#FFFFFF", "#FF0000"), dot.scale = 8, scale=FALSE) +
+    RotatedAxis() + ggtitle("Cell Markers") + scale_color_gradient2(low="#FFFFFF", mid= "#FFCCCC", high = "#FF0000", midpoint = 2)
+dp
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/dotplot_gastrodermal_symbionts_heatmarkers_pct50.png", dp, height = 10, width=18)
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/dotplot_gastrodermal_symbionts_heatmarkers_pct50.svg", dp, height = 10, width=18)
+```
+
+## Remove gastros
+```{r}
+library(scCustomize)
+library(wesanderson)
+ofav.combined.labeled <- readRDS("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/ofav.combined.labeled.2025.rds")
+ofav.combined.labeled.subset <- subset(x = ofav.combined.labeled, idents = c("Breviolum-hosting Cells", "Durusdinium-hosting Cells"))
+my_levels <- c("Ofav-T0-T", "Ofav-T3-T", "Ofav-T5-T", "Ofav-T7-T")
+ofav.combined.labeled.subset@meta.data$orig.ident <- factor(x = ofav.combined.labeled.subset@meta.data$orig.ident, levels = my_levels)
+levels(ofav.combined.labeled.subset@meta.data$orig.ident)
+
+DefaultAssay(ofav.combined.labeled.subset) <- "RNA"
+ofav.combined.labeled.subset$seurat_clusters.Timepoints <- paste(Idents(ofav.combined.labeled.subset), ofav.combined.labeled.subset$orig.ident, sep = "_")
+ofav.combined.labeled.subset$seurat_clusters <- Idents(ofav.combined.labeled.subset)
+Idents(ofav.combined.labeled.subset) <- "seurat_clusters.Timepoints"
+my_levels <- c("Breviolum-hosting Cells_Ofav-T0-T", "Breviolum-hosting Cells_Ofav-T3-T", "Breviolum-hosting Cells_Ofav-T5-T", "Breviolum-hosting Cells_Ofav-T7-T", "Durusdinium-hosting Cells_Ofav-T0-T", "Durusdinium-hosting Cells_Ofav-T3-T", "Durusdinium-hosting Cells_Ofav-T5-T", "Durusdinium-hosting Cells_Ofav-T7-T")
+ofav.combined.labeled.subset@active.ident <- factor(x = ofav.combined.labeled.subset@active.ident, levels = my_levels)
+markers.to.plot <- c("QW917-028232","QW917-008441","QW917-025759","QW917-002688","QW917-008780","QW917-003326","QW917-035714","QW917-008443","QW917-006349","QW917-020637","QW917-030668","QW917-024271","QW917-002686","QW917-018244","QW917-018851","QW917-029254","QW917-003080","QW917-024689","QW917-018150","QW917-010381","QW917-005894","QW917-026114","QW917-028062","QW917-031802","QW917-023314","QW917-014250","QW917-002685","QW917-030101","QW917-013627","QW917-022673","QW917-010242","QW917-013452","QW917-008364","QW917-023319","QW917-022088","QW917-027187","QW917-008828","QW917-011254","QW917-012688","QW917-033575","QW917-013752","QW917-032489","QW917-009336","QW917-018325","QW917-029992","QW917-017432","QW917-003054","QW917-023845","QW917-033195","QW917-018353","QW917-001525","QW917-015206","QW917-011241","QW917-008383","QW917-014705","QW917-032073","QW917-003256","QW917-013974","QW917-007699")
+
+dp<- DotPlot(ofav.combined.labeled.subset, features = markers.to.plot, cols = c("#FFFFFF", "#FF0000"), dot.scale = 8, scale=FALSE) +
+    RotatedAxis() + ggtitle("Cell Markers") + scale_color_gradient2(low="#FFFFFF", mid= "#FFCCCC", high = "#FF0000", midpoint = 2)
+dp
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/dotplot_justsymbionts__heatmarkers_pct50.png", dp, height = 5, width=15)
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/dotplot_justsymbionts__heatmarkers_pct50.svg", dp, height = 5, width=15)
+```
+
+### Dot plot (combine gastros)
+```{r}
+ofav.combined.labeled <- readRDS("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/ofav.combined.labeled.2025.rds")
+cluster_map <- c(
+  "Gastrodermis_1" = "Gastrodermis",
+  "Epidermis" = "Epidermis",
+  "Extracellular Breviolum" = "Extracellular Breviolum",
+  "Breviolum-hosting Cells" = "Breviolum-hosting Cells",
+  "Calicoblastic Cells" = "Calicoblastic Cells",
+  "Neurons_1" = "Neurons",
+  "Gastrodermis (Algal-hosting cells)" = "Gastrodermis (Algal-hosting cells)",
+  "Gland_1" = "Gland",
+  "Neurons_2" = "Neurons",
+  "Gastrodermis_2" = "Gastrodermis",
+  "Germline (sperm)" = "Germline (sperm)",
+  "Gland_2" = "Gland",
+  "Neurons_3" = "Neurons",
+  "Gastrodermis_3" = "Gastrodermis",
+  "Durusdinium-hosting Cells" = "Durusdinium-hosting Cells",
+  "Gland_3" = "Gland",
+  "Immune" = "Immune",
+  "Gastrodermis_4" = "Gastrodermis",
+  "Cnidocytes" = "Cnidocytes"
+)
+
+# Get current identities
+current_idents <- Idents(ofav.combined.labeled)
+
+# Map to supercluster
+superclusters <- cluster_map[current_idents]
+
+# Assign back to object
+Idents(ofav.combined.labeled) <- superclusters
+Idents(ofav.combined.labeled)
+ofav.combined.labeled.subset <- subset(x = ofav.combined.labeled, idents = c("Breviolum-hosting Cells", "Durusdinium-hosting Cells", "Gastrodermis", "Gastrodermis (Algal-hosting cells)"))
+my_levels <- c("Ofav-T0-T", "Ofav-T3-T", "Ofav-T5-T", "Ofav-T7-T")
+ofav.combined.labeled.subset@meta.data$orig.ident <- factor(x = ofav.combined.labeled.subset@meta.data$orig.ident, levels = my_levels)
+levels(ofav.combined.labeled.subset@meta.data$orig.ident)
+
+DefaultAssay(ofav.combined.labeled.subset) <- "RNA"
+ofav.combined.labeled.subset$seurat_clusters.Timepoints <- paste(Idents(ofav.combined.labeled.subset), ofav.combined.labeled.subset$orig.ident, sep = "_")
+ofav.combined.labeled.subset$seurat_clusters <- Idents(ofav.combined.labeled.subset)
+Idents(ofav.combined.labeled.subset) <- "seurat_clusters.Timepoints"
+my_levels <- c("Breviolum-hosting Cells_Ofav-T0-T", "Breviolum-hosting Cells_Ofav-T3-T", "Breviolum-hosting Cells_Ofav-T5-T", "Breviolum-hosting Cells_Ofav-T7-T", "Durusdinium-hosting Cells_Ofav-T0-T", "Durusdinium-hosting Cells_Ofav-T3-T", "Durusdinium-hosting Cells_Ofav-T5-T", "Durusdinium-hosting Cells_Ofav-T7-T", "Gastrodermis (Algal-hosting cells)_Ofav-T0-T", "Gastrodermis (Algal-hosting cells)_Ofav-T3-T", "Gastrodermis (Algal-hosting cells)_Ofav-T5-T", "Gastrodermis (Algal-hosting cells)_Ofav-T7-T", "Gastrodermis_Ofav-T0-T", "Gastrodermis_Ofav-T3-T", "Gastrodermis_Ofav-T5-T", "Gastrodermis_Ofav-T7-T")
+ofav.combined.labeled.subset@active.ident <- factor(x = ofav.combined.labeled.subset@active.ident, levels = my_levels)
+markers.to.plot <- c("QW917-028232","QW917-008441","QW917-025759","QW917-002688","QW917-008780","QW917-003326","QW917-035714","QW917-008443","QW917-006349","QW917-020637","QW917-030668","QW917-024271","QW917-002686","QW917-018244","QW917-018851","QW917-029254","QW917-003080","QW917-024689","QW917-018150","QW917-010381","QW917-005894","QW917-026114","QW917-028062","QW917-031802","QW917-023314","QW917-014250","QW917-002685","QW917-030101","QW917-013627","QW917-022673","QW917-010242","QW917-013452","QW917-008364","QW917-023319","QW917-022088","QW917-027187","QW917-008828","QW917-011254","QW917-012688","QW917-033575","QW917-013752","QW917-032489","QW917-009336","QW917-018325","QW917-029992","QW917-017432","QW917-003054","QW917-023845","QW917-033195","QW917-018353","QW917-001525","QW917-015206","QW917-011241","QW917-008383","QW917-014705","QW917-032073","QW917-003256","QW917-013974","QW917-007699")
+
+dp<- DotPlot(ofav.combined.labeled.subset, features = markers.to.plot, cols = c("#FFFFFF", "#FF0000"), dot.scale = 8, scale=FALSE) +
+    RotatedAxis() + ggtitle("Cell Markers") + scale_color_gradient2(low="#FFFFFF", mid= "#FFCCCC", high = "#FF0000", midpoint = 2)
+dp
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/dotplot_combinedgastrodermal_symbionts_heatmarkers_pct50.png", dp, height = 10, width=20)
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/dotplot_combinedgastrodermal_symbionts_heatmarkers_pct50.svg", dp, height = 10, width=20)
+```
+## Calculate directly symbiont-hosting cells (combine) vs gatsrodermal cells?
+```{r}
+ofav.combined.labeled <- readRDS("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/ofav.combined.labeled.2025.rds")
+cluster_map <- c(
+  "Gastrodermis_1" = "Gastrodermis",
+  "Epidermis" = "Epidermis",
+  "Extracellular Breviolum" = "Extracellular Breviolum",
+  "Breviolum-hosting Cells" = "Symbiont-hosting Cells",
+  "Calicoblastic Cells" = "Calicoblastic Cells",
+  "Neurons_1" = "Neurons",
+  "Gastrodermis (Algal-hosting cells)" = "Gastrodermis",
+  "Gland_1" = "Gland",
+  "Neurons_2" = "Neurons",
+  "Gastrodermis_2" = "Gastrodermis",
+  "Germline (sperm)" = "Germline (sperm)",
+  "Gland_2" = "Gland",
+  "Neurons_3" = "Neurons",
+  "Gastrodermis_3" = "Gastrodermis",
+  "Durusdinium-hosting Cells" = "Symbiont-hosting Cells",
+  "Gland_3" = "Gland",
+  "Immune" = "Immune",
+  "Gastrodermis_4" = "Gastrodermis",
+  "Cnidocytes" = "Cnidocytes"
+)
+
+# Get current identities
+current_idents <- Idents(ofav.combined.labeled)
+
+# Map to supercluster
+superclusters <- cluster_map[current_idents]
+
+# Assign back to object
+Idents(ofav.combined.labeled) <- superclusters
+Idents(ofav.combined.labeled)
+ofav.combined.labeled.subset <- subset(x = ofav.combined.labeled, idents = c("Symbiont-hosting Cells", "Gastrodermis"))
+
+library(dplyr)
+library(tibble)
+library(stringr)
+library(Seurat)
+# Subset to only the two cell types
+ofav.sub <- ofav.combined.labeled.subset
+
+# Ensure timepoints are ordered
+time_levels <- c("Ofav-T0-T", "Ofav-T3-T", "Ofav-T5-T", "Ofav-T7-T")
+ofav.sub$orig.ident <- factor(ofav.sub$orig.ident, levels = time_levels)
+
+# Create combined "time_celltype" identity
+ofav.sub$time_cluster <- paste0(ofav.sub$orig.ident, "_", Idents(ofav.sub))
+Idents(ofav.sub) <- "time_cluster"
+
+# Empty tibble template
+empty_markers <- tibble(
+  gene = character(),
+  p_val = numeric(),
+  avg_log2FC = numeric(),
+  pct.1 = numeric(),
+  pct.2 = numeric(),
+  p_val_adj = numeric(),
+  timepoint = character()
+)
+
+all_markers <- list()
+
+# Loop through each timepoint
+for (tp in c("T0", "T3", "T5", "T7")) {
+  ident1 <- paste0("Ofav-", tp, "-T_Symbiont-hosting Cells")
+  ident2 <- paste0("Ofav-", tp, "-T_Gastrodermis")
+  
+  # Skip if either ident is missing
+  if (!(ident1 %in% levels(ofav.sub)) || !(ident2 %in% levels(ofav.sub))) {
+    next
+  }
+  
+  message("Processing timepoint: ", tp)
+  
+  degs <- FindMarkers(
+    object = ofav.sub,
+    ident.1 = ident1,
+    ident.2 = ident2,
+    only.pos = FALSE,  # keep both up and down
+    min.pct = 0.1,
+    min.diff.pct = 0.1,
+    logfc.threshold = 0.1
+  ) %>%
+    as.data.frame() %>%
+    rownames_to_column("gene") %>%
+    as_tibble() %>%
+    filter(p_val_adj < 0.05) %>%
+    mutate(timepoint = tp)
+  
+  if (nrow(degs) == 0) degs <- empty_markers %>% mutate(timepoint = tp)
+  
+  all_markers[[tp]] <- degs
+}
+
+# Combine all timepoints into one table
+final_markers <- bind_rows(all_markers)
+
+# Save
+write_csv(final_markers, "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/symbiont_vs_gastrodermis_DEGs.csv")
+```
+```{r}
+ofav.combined.labeled <- readRDS("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/ofav.combined.labeled.2025.rds")
+ofav.combined.labeled.subset <- subset(x = ofav.combined.labeled, idents = c("Breviolum-hosting Cells", "Durusdinium-hosting Cells", "Gastrodermis (Algal-hosting cells)","Gastrodermis_1","Gastrodermis_2","Gastrodermis_3","Gastrodermis_4"))
+my_levels <- c("Ofav-T0-T", "Ofav-T3-T", "Ofav-T5-T", "Ofav-T7-T")
+ofav.combined.labeled.subset@meta.data$orig.ident <- factor(x = ofav.combined.labeled.subset@meta.data$orig.ident, levels = my_levels)
+levels(ofav.combined.labeled.subset@meta.data$orig.ident)
+
+DefaultAssay(ofav.combined.labeled.subset) <- "RNA"
+ofav.combined.labeled.subset$seurat_clusters.Timepoints <- paste(Idents(ofav.combined.labeled.subset), ofav.combined.labeled.subset$orig.ident, sep = "_")
+ofav.combined.labeled.subset$seurat_clusters <- Idents(ofav.combined.labeled.subset)
+Idents(ofav.combined.labeled.subset) <- "seurat_clusters.Timepoints"
+my_levels <- c("Breviolum-hosting Cells_Ofav-T0-T", "Breviolum-hosting Cells_Ofav-T3-T", "Breviolum-hosting Cells_Ofav-T5-T", "Breviolum-hosting Cells_Ofav-T7-T", "Durusdinium-hosting Cells_Ofav-T0-T", "Durusdinium-hosting Cells_Ofav-T3-T", "Durusdinium-hosting Cells_Ofav-T5-T", "Durusdinium-hosting Cells_Ofav-T7-T", "Gastrodermis (Algal-hosting cells)_Ofav-T0-T", "Gastrodermis (Algal-hosting cells)_Ofav-T3-T", "Gastrodermis (Algal-hosting cells)_Ofav-T5-T", "Gastrodermis (Algal-hosting cells)_Ofav-T7-T", "Gastrodermis_1_Ofav-T0-T", "Gastrodermis_1_Ofav-T3-T", "Gastrodermis_1_Ofav-T5-T", "Gastrodermis_1_Ofav-T7-T", "Gastrodermis_2_Ofav-T0-T", "Gastrodermis_2_Ofav-T3-T", "Gastrodermis_2_Ofav-T5-T", "Gastrodermis_2_Ofav-T7-T", "Gastrodermis_3_Ofav-T0-T", "Gastrodermis_3_Ofav-T3-T", "Gastrodermis_3_Ofav-T5-T", "Gastrodermis_3_Ofav-T7-T", "Gastrodermis_4_Ofav-T0-T", "Gastrodermis_4_Ofav-T3-T", "Gastrodermis_4_Ofav-T5-T", "Gastrodermis_4_Ofav-T7-T")
+ofav.combined.labeled.subset@active.ident <- factor(x = ofav.combined.labeled.subset@active.ident, levels = my_levels)
+markers.to.plot <- c("QW917-005894","QW917-007699","QW917-001645","QW917-026128","QW917-026114","QW917-030668","QW917-017879","QW917-023502","QW917-013386","QW917-003904","QW917-014316","QW917-014631","QW917-018244","QW917-008383","QW917-017815","QW917-032268","QW917-005606","QW917-018090","QW917-003256","QW917-004600","QW917-008443","QW917-016672","QW917-027780","QW917-002686","QW917-022086")
+
+dp<- DotPlot(ofav.combined.labeled.subset, features = markers.to.plot, cols = c("#FFFFFF", "#FF0000"), dot.scale = 8, scale=FALSE) +
+    RotatedAxis() + ggtitle("Cell Markers") + scale_color_gradient2(low="#FFFFFF", mid= "#FFCCCC", high = "#FF0000", midpoint = 2)
+dp
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/dotplot_gastrodermal_vs_symbionts_heatmarkers.png", dp, height = 10, width=15)
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/dotplot_gastrodermal_vs_symbionts_heatmarkers.svg", dp, height = 10, width=15)
+```
+```{r}
+ofav.combined.labeled <- readRDS("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/ofav.combined.labeled.2025.rds")
+cluster_map <- c(
+  "Gastrodermis_1" = "Gastrodermis",
+  "Epidermis" = "Epidermis",
+  "Extracellular Breviolum" = "Extracellular Breviolum",
+  "Breviolum-hosting Cells" = "Breviolum-hosting Cells",
+  "Calicoblastic Cells" = "Calicoblastic Cells",
+  "Neurons_1" = "Neurons",
+  "Gastrodermis (Algal-hosting cells)" = "Gastrodermis",
+  "Gland_1" = "Gland",
+  "Neurons_2" = "Neurons",
+  "Gastrodermis_2" = "Gastrodermis",
+  "Germline (sperm)" = "Germline (sperm)",
+  "Gland_2" = "Gland",
+  "Neurons_3" = "Neurons",
+  "Gastrodermis_3" = "Gastrodermis",
+  "Durusdinium-hosting Cells" = "Durusdinium-hosting Cells",
+  "Gland_3" = "Gland",
+  "Immune" = "Immune",
+  "Gastrodermis_4" = "Gastrodermis",
+  "Cnidocytes" = "Cnidocytes"
+)
+
+# Get current identities
+current_idents <- Idents(ofav.combined.labeled)
+
+# Map to supercluster
+superclusters <- cluster_map[current_idents]
+
+# Assign back to object
+Idents(ofav.combined.labeled) <- superclusters
+Idents(ofav.combined.labeled)
+ofav.combined.labeled.subset <- subset(x = ofav.combined.labeled, idents = c("Breviolum-hosting Cells", "Durusdinium-hosting Cells", "Gastrodermis"))
+my_levels <- c("Ofav-T0-T", "Ofav-T3-T", "Ofav-T5-T", "Ofav-T7-T")
+ofav.combined.labeled.subset@meta.data$orig.ident <- factor(x = ofav.combined.labeled.subset@meta.data$orig.ident, levels = my_levels)
+levels(ofav.combined.labeled.subset@meta.data$orig.ident)
+
+DefaultAssay(ofav.combined.labeled.subset) <- "RNA"
+ofav.combined.labeled.subset$seurat_clusters.Timepoints <- paste(Idents(ofav.combined.labeled.subset), ofav.combined.labeled.subset$orig.ident, sep = "_")
+ofav.combined.labeled.subset$seurat_clusters <- Idents(ofav.combined.labeled.subset)
+Idents(ofav.combined.labeled.subset) <- "seurat_clusters.Timepoints"
+my_levels <- c("Breviolum-hosting Cells_Ofav-T0-T", "Breviolum-hosting Cells_Ofav-T3-T", "Breviolum-hosting Cells_Ofav-T5-T", "Breviolum-hosting Cells_Ofav-T7-T", "Durusdinium-hosting Cells_Ofav-T0-T", "Durusdinium-hosting Cells_Ofav-T3-T", "Durusdinium-hosting Cells_Ofav-T5-T", "Durusdinium-hosting Cells_Ofav-T7-T","Gastrodermis_Ofav-T0-T", "Gastrodermis_Ofav-T3-T", "Gastrodermis_Ofav-T5-T", "Gastrodermis_Ofav-T7-T")
+ofav.combined.labeled.subset@active.ident <- factor(x = ofav.combined.labeled.subset@active.ident, levels = my_levels)
+markers.to.plot <- c("QW917-005894","QW917-007699","QW917-001645","QW917-026128","QW917-026114","QW917-030668","QW917-017879","QW917-023502","QW917-013386","QW917-003904","QW917-014316","QW917-014631","QW917-018244","QW917-008383","QW917-017815","QW917-032268","QW917-005606","QW917-018090","QW917-003256","QW917-004600","QW917-008443","QW917-016672","QW917-027780","QW917-002686","QW917-022086")
+
+dp<- DotPlot(ofav.combined.labeled.subset, features = markers.to.plot, cols = c("#FFFFFF", "#FF0000"), dot.scale = 8, scale=FALSE) +
+    RotatedAxis() + ggtitle("Cell Markers") + scale_color_gradient2(low="#FFFFFF", mid= "#FFCCCC", high = "#FF0000", midpoint = 2)
+dp
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/dotplot_combinedgastrodermal_vs_symbionts_heatmarkers.png", dp, height = 10, width=15)
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/dotplot_combinedgastrodermal_vs_symbionts_heatmarkers.svg", dp, height = 10, width=15)
+```
+
+
+## Extended Data Figures
+### Go Analysis (Bulk Clusters)
+## Combine Cell Types for Go Analysis (test here with gastrodermis)- looks good
+```{r}
+ofav.combined.labeled <- readRDS("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/ofav.combined.labeled.2025.rds")
+
+library("topGO")
+library(Seurat)
+library(tidyverse)
+library(magrittr)
+library(ReactomePA)
+library(clusterProfiler)
+library(enrichplot)
+library(org.Hs.eg.db)
+library(DOSE)
+mk <- FindAllMarkers(ofav.combined.labeled, min.pct = 0.01, return.thresh=0.05, only.pos = T)
+mk <- mk[mk$p_val_adj <= 0.05, ]
+formatted_data <- list()
+
+# Iterate over clusters and format data for each cluster
+for (cluster_id in unique(mk$cluster)) {
+  cluster_genes <- mk$gene[mk$cluster == cluster_id]
+  cluster_pvalues <- mk$p_val_adj[mk$cluster == cluster_id]
+  # Create a data frame with gene names as row names and P-values as numeric values
+  cluster_data <- data.frame(genes = cluster_genes, pvalues = as.numeric(cluster_pvalues))
+  rownames(cluster_data) <- cluster_genes
+  # Append to the list
+  formatted_data[[as.character(cluster_id)]] <- cluster_data
+}
+# Combine the list into a single named list
+genes_per_cluster <- formatted_data
+
+gocluster1_1 <- genes_per_cluster[["Neurons_1"]]
+gocluster1_2 <- genes_per_cluster[["Neurons_2"]]
+gocluster1_3 <- genes_per_cluster[["Neurons_3"]]
+gocluster1 <- rbind(gocluster1_1, gocluster1_2, gocluster1_3)
+# Convert genes and pvalues columns to a named list
+text_data <- read.csv(file = "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/seurat/id2symbol2.txt", sep="\t", header = TRUE, stringsAsFactors = FALSE)
+merged_data <- merge(gocluster1, text_data, by.x = "genes", by.y = "ID", all.x = TRUE)
+merged_data$genes <- ifelse(!is.na(merged_data$symbol), merged_data$symbol, merged_data$genes)
+merged_data <- merged_data[complete.cases(merged_data$symbol), ]
+genes_list <- setNames(merged_data$pvalues, merged_data$genes)
+range(genes_list)
+
+selection <- function(allScore){ return(allScore < 0.05)}
+allGO2genes <- annFUN.org(whichOnto="BP", feasibleGenes=NULL, mapping="org.Hs.eg.db", ID="symbol")
+GOdata <- new("topGOdata",
+  ontology="BP",
+  allGenes=genes_list,
+  annot=annFUN.GO2genes,
+  GO2genes=allGO2genes,
+  geneSel=selection,
+  nodeSize=10)
+results.ks <- runTest(GOdata, algorithm="classic", statistic="ks")
+goEnrichment <- GenTable(GOdata, KS=results.ks, orderBy="KS", topNodes=20)
+goEnrichment$KS <- as.numeric(goEnrichment$KS)
+goEnrichment <- goEnrichment[goEnrichment$KS<0.05,]
+goEnrichment <- goEnrichment[,c("GO.ID","Term","KS")]
+goEnrichment$Term <- gsub(" [a-z]*\\.\\.\\.$", "", goEnrichment$Term)
+goEnrichment$Term <- gsub("\\.\\.\\.$", "", goEnrichment$Term)
+goEnrichment$Term <- paste(goEnrichment$GO.ID, goEnrichment$Term, sep=", ")
+goEnrichment$Term <- factor(goEnrichment$Term, levels=rev(goEnrichment$Term))
+
+GO_plot <- ggplot(goEnrichment, aes(x=Term, y=-log10(KS))) +
+    stat_summary(geom = "bar", fun.y = mean, position = "dodge", fill = "deepskyblue") +
+    xlab("Biological process") +
+    ylab("Enrichment (-log10 of P-value)") +
+    ggtitle("GO Neuron Clusters") +
+    scale_y_continuous(limits = c(0,5), expand = c(0,0)) +
+    theme_bw(base_size=24) +
+    theme(
+        legend.position='none',
+        legend.background=element_rect(),
+        plot.title=element_text(angle=0, size=24, face="bold", vjust=1),
+        axis.text.x=element_text(angle=0, size=18, face="bold", hjust=1.10),
+        axis.text.y=element_text(angle=0, size=18, face="bold", vjust=0.5),
+        axis.title=element_text(size=24, face="bold"),
+        legend.key=element_blank(),     #removes the border
+        legend.key.size=unit(1, "cm"),      #Sets overall area/size of the legend
+        legend.text=element_text(size=18),  #Text size
+        title=element_text(size=18)) +
+    guides(colour=guide_legend(override.aes=list(size=2.5))) +
+    coord_flip()
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/GO_Neurons.svg", GO_plot, height = 10, width=15)
+
+gocluster1 <- genes_per_cluster[["Epidermis"]]
+# Convert genes and pvalues columns to a named list
+text_data <- read.csv(file = "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/seurat/id2symbol2.txt", sep="\t", header = TRUE, stringsAsFactors = FALSE)
+merged_data <- merge(gocluster1, text_data, by.x = "genes", by.y = "ID", all.x = TRUE)
+merged_data$genes <- ifelse(!is.na(merged_data$symbol), merged_data$symbol, merged_data$genes)
+merged_data <- merged_data[complete.cases(merged_data$symbol), ]
+genes_list <- setNames(merged_data$pvalues, merged_data$genes)
+range(genes_list)
+
+selection <- function(allScore){ return(allScore < 0.05)}
+allGO2genes <- annFUN.org(whichOnto="BP", feasibleGenes=NULL, mapping="org.Hs.eg.db", ID="symbol")
+GOdata <- new("topGOdata",
+  ontology="BP",
+  allGenes=genes_list,
+  annot=annFUN.GO2genes,
+  GO2genes=allGO2genes,
+  geneSel=selection,
+  nodeSize=10)
+results.ks <- runTest(GOdata, algorithm="classic", statistic="ks")
+goEnrichment <- GenTable(GOdata, KS=results.ks, orderBy="KS", topNodes=20)
+goEnrichment$KS <- as.numeric(goEnrichment$KS)
+goEnrichment <- goEnrichment[goEnrichment$KS<0.05,]
+goEnrichment <- goEnrichment[,c("GO.ID","Term","KS")]
+goEnrichment$Term <- gsub(" [a-z]*\\.\\.\\.$", "", goEnrichment$Term)
+goEnrichment$Term <- gsub("\\.\\.\\.$", "", goEnrichment$Term)
+goEnrichment$Term <- paste(goEnrichment$GO.ID, goEnrichment$Term, sep=", ")
+goEnrichment$Term <- factor(goEnrichment$Term, levels=rev(goEnrichment$Term))
+
+GO_plot <- ggplot(goEnrichment, aes(x=Term, y=-log10(KS))) +
+    stat_summary(geom = "bar", fun.y = mean, position = "dodge", fill = "red") +
+    xlab("Biological process") +
+    ylab("Enrichment (-log10 of P-value)") +
+    ggtitle("Epidermis") +
+    scale_y_continuous(limits = c(0,5), expand = c(0,0)) +
+    theme_bw(base_size=24) +
+    theme(
+        legend.position='none',
+        legend.background=element_rect(),
+        plot.title=element_text(angle=0, size=24, face="bold", vjust=1),
+        axis.text.x=element_text(angle=0, size=18, face="bold", hjust=1.10),
+        axis.text.y=element_text(angle=0, size=18, face="bold", vjust=0.5),
+        axis.title=element_text(size=24, face="bold"),
+        legend.key=element_blank(),     #removes the border
+        legend.key.size=unit(1, "cm"),      #Sets overall area/size of the legend
+        legend.text=element_text(size=18),  #Text size
+        title=element_text(size=18)) +
+    guides(colour=guide_legend(override.aes=list(size=2.5))) +
+    coord_flip()
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/GO_epidermis.svg", GO_plot, height = 10, width=15)
+
+gocluster1_1 <- genes_per_cluster[["Gland_1"]]
+gocluster1_2 <- genes_per_cluster[["Gland_2"]]
+gocluster1_3 <- genes_per_cluster[["Gland_3"]]
+gocluster1 <- rbind(gocluster1_1, gocluster1_2)
+# Convert genes and pvalues columns to a named list
+text_data <- read.csv(file = "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/seurat/id2symbol2.txt", sep="\t", header = TRUE, stringsAsFactors = FALSE)
+merged_data <- merge(gocluster1, text_data, by.x = "genes", by.y = "ID", all.x = TRUE)
+merged_data$genes <- ifelse(!is.na(merged_data$symbol), merged_data$symbol, merged_data$genes)
+merged_data <- merged_data[complete.cases(merged_data$symbol), ]
+genes_list <- setNames(merged_data$pvalues, merged_data$genes)
+range(genes_list)
+
+selection <- function(allScore){ return(allScore < 0.05)}
+allGO2genes <- annFUN.org(whichOnto="BP", feasibleGenes=NULL, mapping="org.Hs.eg.db", ID="symbol")
+GOdata <- new("topGOdata",
+  ontology="BP",
+  allGenes=genes_list,
+  annot=annFUN.GO2genes,
+  GO2genes=allGO2genes,
+  geneSel=selection,
+  nodeSize=10)
+results.ks <- runTest(GOdata, algorithm="classic", statistic="ks")
+goEnrichment <- GenTable(GOdata, KS=results.ks, orderBy="KS", topNodes=20)
+goEnrichment$KS <- as.numeric(goEnrichment$KS)
+goEnrichment <- goEnrichment[goEnrichment$KS<0.05,]
+goEnrichment <- goEnrichment[,c("GO.ID","Term","KS")]
+goEnrichment$Term <- gsub(" [a-z]*\\.\\.\\.$", "", goEnrichment$Term)
+goEnrichment$Term <- gsub("\\.\\.\\.$", "", goEnrichment$Term)
+goEnrichment$Term <- paste(goEnrichment$GO.ID, goEnrichment$Term, sep=", ")
+goEnrichment$Term <- factor(goEnrichment$Term, levels=rev(goEnrichment$Term))
+
+GO_plot <- ggplot(goEnrichment, aes(x=Term, y=-log10(KS))) +
+    stat_summary(geom = "bar", fun.y = mean, position = "dodge", fill = "darkorange") +
+    xlab("Biological process") +
+    ylab("Enrichment (-log10 of P-value)") +
+    ggtitle("GO Gland Clusters") +
+    scale_y_continuous(limits = c(0,5), expand = c(0,0)) +
+    theme_bw(base_size=24) +
+    theme(
+        legend.position='none',
+        legend.background=element_rect(),
+        plot.title=element_text(angle=0, size=24, face="bold", vjust=1),
+        axis.text.x=element_text(angle=0, size=18, face="bold", hjust=1.10),
+        axis.text.y=element_text(angle=0, size=18, face="bold", vjust=0.5),
+        axis.title=element_text(size=24, face="bold"),
+        legend.key=element_blank(),     #removes the border
+        legend.key.size=unit(1, "cm"),      #Sets overall area/size of the legend
+        legend.text=element_text(size=18),  #Text size
+        title=element_text(size=18)) +
+    guides(colour=guide_legend(override.aes=list(size=2.5))) +
+    coord_flip()
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/GO_gland.svg", GO_plot, height = 10, width=15)
+
+gocluster1_1 <- genes_per_cluster[["Gastrodermis_1"]]
+gocluster1_2 <- genes_per_cluster[["Gastrodermis_2"]]
+gocluster1_3 <- genes_per_cluster[["Gastrodermis_3"]]
+gocluster1_4 <- genes_per_cluster[["Gastrodermis_4"]]
+gocluster1_5 <- genes_per_cluster[["Gastrodermis (Algal-hosting cells)"]]
+gocluster1 <- rbind(gocluster1_1, gocluster1_2, gocluster1_3, gocluster1_4, gocluster1_5)
+# Convert genes and pvalues columns to a named list
+text_data <- read.csv(file = "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/seurat/id2symbol2.txt", sep="\t", header = TRUE, stringsAsFactors = FALSE)
+merged_data <- merge(gocluster1, text_data, by.x = "genes", by.y = "ID", all.x = TRUE)
+merged_data$genes <- ifelse(!is.na(merged_data$symbol), merged_data$symbol, merged_data$genes)
+merged_data <- merged_data[complete.cases(merged_data$symbol), ]
+genes_list <- setNames(merged_data$pvalues, merged_data$genes)
+range(genes_list)
+
+selection <- function(allScore){ return(allScore < 0.05)}
+allGO2genes <- annFUN.org(whichOnto="BP", feasibleGenes=NULL, mapping="org.Hs.eg.db", ID="symbol")
+GOdata <- new("topGOdata",
+  ontology="BP",
+  allGenes=genes_list,
+  annot=annFUN.GO2genes,
+  GO2genes=allGO2genes,
+  geneSel=selection,
+  nodeSize=10)
+results.ks <- runTest(GOdata, algorithm="classic", statistic="ks")
+goEnrichment <- GenTable(GOdata, KS=results.ks, orderBy="KS", topNodes=20)
+goEnrichment$KS <- as.numeric(goEnrichment$KS)
+goEnrichment <- goEnrichment[goEnrichment$KS<0.05,]
+goEnrichment <- goEnrichment[,c("GO.ID","Term","KS")]
+goEnrichment$Term <- gsub(" [a-z]*\\.\\.\\.$", "", goEnrichment$Term)
+goEnrichment$Term <- gsub("\\.\\.\\.$", "", goEnrichment$Term)
+goEnrichment$Term <- paste(goEnrichment$GO.ID, goEnrichment$Term, sep=", ")
+goEnrichment$Term <- factor(goEnrichment$Term, levels=rev(goEnrichment$Term))
+
+GO_plot <- ggplot(goEnrichment, aes(x=Term, y=-log10(KS))) +
+    stat_summary(geom = "bar", fun.y = mean, position = "dodge", fill = "darkorange") +
+    xlab("Biological process") +
+    ylab("Enrichment (-log10 of P-value)") +
+    ggtitle("Gastrodermis") +
+    scale_y_continuous(limits = c(0,5), expand = c(0,0)) +
+    theme_bw(base_size=24) +
+    theme(
+        legend.position='none',
+        legend.background=element_rect(),
+        plot.title=element_text(angle=0, size=24, face="bold", vjust=1),
+        axis.text.x=element_text(angle=0, size=18, face="bold", hjust=1.10),
+        axis.text.y=element_text(angle=0, size=18, face="bold", vjust=0.5),
+        axis.title=element_text(size=24, face="bold"),
+        legend.key=element_blank(),     #removes the border
+        legend.key.size=unit(1, "cm"),      #Sets overall area/size of the legend
+        legend.text=element_text(size=18),  #Text size
+        title=element_text(size=18)) +
+    guides(colour=guide_legend(override.aes=list(size=2.5))) +
+    coord_flip()
+
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/GO_gastrodermis.svg", GO_plot, height = 10, width=15)
+
+gocluster1 <- genes_per_cluster[["Cnidocytes"]]
+# Convert genes and pvalues columns to a named list
+text_data <- read.csv(file = "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/seurat/id2symbol2.txt", sep="\t", header = TRUE, stringsAsFactors = FALSE)
+merged_data <- merge(gocluster1, text_data, by.x = "genes", by.y = "ID", all.x = TRUE)
+merged_data$genes <- ifelse(!is.na(merged_data$symbol), merged_data$symbol, merged_data$genes)
+merged_data <- merged_data[complete.cases(merged_data$symbol), ]
+genes_list <- setNames(merged_data$pvalues, merged_data$genes)
+range(genes_list)
+
+selection <- function(allScore){ return(allScore < 0.05)}
+allGO2genes <- annFUN.org(whichOnto="BP", feasibleGenes=NULL, mapping="org.Hs.eg.db", ID="symbol")
+GOdata <- new("topGOdata",
+  ontology="BP",
+  allGenes=genes_list,
+  annot=annFUN.GO2genes,
+  GO2genes=allGO2genes,
+  geneSel=selection,
+  nodeSize=10)
+results.ks <- runTest(GOdata, algorithm="classic", statistic="ks")
+goEnrichment <- GenTable(GOdata, KS=results.ks, orderBy="KS", topNodes=20)
+goEnrichment$KS <- as.numeric(goEnrichment$KS)
+goEnrichment <- goEnrichment[goEnrichment$KS<0.05,]
+goEnrichment <- goEnrichment[,c("GO.ID","Term","KS")]
+goEnrichment$Term <- gsub(" [a-z]*\\.\\.\\.$", "", goEnrichment$Term)
+goEnrichment$Term <- gsub("\\.\\.\\.$", "", goEnrichment$Term)
+goEnrichment$Term <- paste(goEnrichment$GO.ID, goEnrichment$Term, sep=", ")
+goEnrichment$Term <- factor(goEnrichment$Term, levels=rev(goEnrichment$Term))
+
+GO_plot <- ggplot(goEnrichment, aes(x=Term, y=-log10(KS))) +
+    stat_summary(geom = "bar", fun.y = mean, position = "dodge", fill = "plum1") +
+    xlab("Biological process") +
+    ylab("Enrichment (-log10 of P-value)") +
+    ggtitle("GO Cnidocytes") +
+    scale_y_continuous(limits = c(0,5), expand = c(0,0)) +
+    theme_bw(base_size=24) +
+    theme(
+        legend.position='none',
+        legend.background=element_rect(),
+        plot.title=element_text(angle=0, size=24, face="bold", vjust=1),
+        axis.text.x=element_text(angle=0, size=18, face="bold", hjust=1.10),
+        axis.text.y=element_text(angle=0, size=18, face="bold", vjust=0.5),
+        axis.title=element_text(size=24, face="bold"),
+        legend.key=element_blank(),     #removes the border
+        legend.key.size=unit(1, "cm"),      #Sets overall area/size of the legend
+        legend.text=element_text(size=18),  #Text size
+        title=element_text(size=18)) +
+    guides(colour=guide_legend(override.aes=list(size=2.5))) +
+    coord_flip()
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/GO_cnidocytes.svg", GO_plot, height = 10, width=15)
+
+gocluster1 <- genes_per_cluster[["Calicoblastic Cells"]]
+# Convert genes and pvalues columns to a named list
+text_data <- read.csv(file = "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/seurat/id2symbol2.txt", sep="\t", header = TRUE, stringsAsFactors = FALSE)
+merged_data <- merge(gocluster1, text_data, by.x = "genes", by.y = "ID", all.x = TRUE)
+merged_data$genes <- ifelse(!is.na(merged_data$symbol), merged_data$symbol, merged_data$genes)
+merged_data <- merged_data[complete.cases(merged_data$symbol), ]
+genes_list <- setNames(merged_data$pvalues, merged_data$genes)
+range(genes_list)
+
+selection <- function(allScore){ return(allScore < 0.05)}
+allGO2genes <- annFUN.org(whichOnto="BP", feasibleGenes=NULL, mapping="org.Hs.eg.db", ID="symbol")
+GOdata <- new("topGOdata",
+  ontology="BP",
+  allGenes=genes_list,
+  annot=annFUN.GO2genes,
+  GO2genes=allGO2genes,
+  geneSel=selection,
+  nodeSize=10)
+results.ks <- runTest(GOdata, algorithm="classic", statistic="ks")
+goEnrichment <- GenTable(GOdata, KS=results.ks, orderBy="KS", topNodes=20)
+goEnrichment$KS <- as.numeric(goEnrichment$KS)
+goEnrichment <- goEnrichment[goEnrichment$KS<0.05,]
+goEnrichment <- goEnrichment[,c("GO.ID","Term","KS")]
+goEnrichment$Term <- gsub(" [a-z]*\\.\\.\\.$", "", goEnrichment$Term)
+goEnrichment$Term <- gsub("\\.\\.\\.$", "", goEnrichment$Term)
+goEnrichment$Term <- paste(goEnrichment$GO.ID, goEnrichment$Term, sep=", ")
+goEnrichment$Term <- factor(goEnrichment$Term, levels=rev(goEnrichment$Term))
+
+GO_plot <- ggplot(goEnrichment, aes(x=Term, y=-log10(KS))) +
+    stat_summary(geom = "bar", fun.y = mean, position = "dodge", fill = "darkorchid4") +
+    xlab("Biological process") +
+    ylab("Enrichment (-log10 of P-value)") +
+    ggtitle("GO Calicoblastic Cells") +
+    scale_y_continuous(limits = c(0,5), expand = c(0,0)) +
+    theme_bw(base_size=24) +
+    theme(
+        legend.position='none',
+        legend.background=element_rect(),
+        plot.title=element_text(angle=0, size=24, face="bold", vjust=1),
+        axis.text.x=element_text(angle=0, size=18, face="bold", hjust=1.10),
+        axis.text.y=element_text(angle=0, size=18, face="bold", vjust=0.5),
+        axis.title=element_text(size=24, face="bold"),
+        legend.key=element_blank(),     #removes the border
+        legend.key.size=unit(1, "cm"),      #Sets overall area/size of the legend
+        legend.text=element_text(size=18),  #Text size
+        title=element_text(size=18)) +
+    guides(colour=guide_legend(override.aes=list(size=2.5))) +
+    coord_flip()
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/GO_CalicoblasticCells.svg", GO_plot, height = 10, width=15)
+
+gocluster1 <- genes_per_cluster[["Immune"]]
+# Convert genes and pvalues columns to a named list
+text_data <- read.csv(file = "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/seurat/id2symbol2.txt", sep="\t", header = TRUE, stringsAsFactors = FALSE)
+merged_data <- merge(gocluster1, text_data, by.x = "genes", by.y = "ID", all.x = TRUE)
+merged_data$genes <- ifelse(!is.na(merged_data$symbol), merged_data$symbol, merged_data$genes)
+merged_data <- merged_data[complete.cases(merged_data$symbol), ]
+genes_list <- setNames(merged_data$pvalues, merged_data$genes)
+range(genes_list)
+
+selection <- function(allScore){ return(allScore < 0.05)}
+allGO2genes <- annFUN.org(whichOnto="BP", feasibleGenes=NULL, mapping="org.Hs.eg.db", ID="symbol")
+GOdata <- new("topGOdata",
+  ontology="BP",
+  allGenes=genes_list,
+  annot=annFUN.GO2genes,
+  GO2genes=allGO2genes,
+  geneSel=selection,
+  nodeSize=10)
+results.ks <- runTest(GOdata, algorithm="classic", statistic="ks")
+goEnrichment <- GenTable(GOdata, KS=results.ks, orderBy="KS", topNodes=20)
+goEnrichment$KS <- as.numeric(goEnrichment$KS)
+goEnrichment <- goEnrichment[goEnrichment$KS<0.05,]
+goEnrichment <- goEnrichment[,c("GO.ID","Term","KS")]
+goEnrichment$Term <- gsub(" [a-z]*\\.\\.\\.$", "", goEnrichment$Term)
+goEnrichment$Term <- gsub("\\.\\.\\.$", "", goEnrichment$Term)
+goEnrichment$Term <- paste(goEnrichment$GO.ID, goEnrichment$Term, sep=", ")
+goEnrichment$Term <- factor(goEnrichment$Term, levels=rev(goEnrichment$Term))
+
+GO_plot <- ggplot(goEnrichment, aes(x=Term, y=-log10(KS))) +
+    stat_summary(geom = "bar", fun.y = mean, position = "dodge", fill = "darkkhaki") +
+    xlab("Biological process") +
+    ylab("Enrichment (-log10 of P-value)") +
+    ggtitle("GO Immune") +
+    scale_y_continuous(limits = c(0,5), expand = c(0,0)) +
+    theme_bw(base_size=24) +
+    theme(
+        legend.position='none',
+        legend.background=element_rect(),
+        plot.title=element_text(angle=0, size=24, face="bold", vjust=1),
+        axis.text.x=element_text(angle=0, size=18, face="bold", hjust=1.10),
+        axis.text.y=element_text(angle=0, size=18, face="bold", vjust=0.5),
+        axis.title=element_text(size=24, face="bold"),
+        legend.key=element_blank(),     #removes the border
+        legend.key.size=unit(1, "cm"),      #Sets overall area/size of the legend
+        legend.text=element_text(size=18),  #Text size
+        title=element_text(size=18)) +
+    guides(colour=guide_legend(override.aes=list(size=2.5))) +
+    coord_flip()
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/GO_Immune.svg", GO_plot, height = 10, width=15)
+
+gocluster1 <- genes_per_cluster[["Germline (sperm)"]]
+# Convert genes and pvalues columns to a named list
+text_data <- read.csv(file = "/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/seurat/id2symbol2.txt", sep="\t", header = TRUE, stringsAsFactors = FALSE)
+merged_data <- merge(gocluster1, text_data, by.x = "genes", by.y = "ID", all.x = TRUE)
+merged_data$genes <- ifelse(!is.na(merged_data$symbol), merged_data$symbol, merged_data$genes)
+merged_data <- merged_data[complete.cases(merged_data$symbol), ]
+genes_list <- setNames(merged_data$pvalues, merged_data$genes)
+range(genes_list)
+
+selection <- function(allScore){ return(allScore < 0.05)}
+allGO2genes <- annFUN.org(whichOnto="BP", feasibleGenes=NULL, mapping="org.Hs.eg.db", ID="symbol")
+GOdata <- new("topGOdata",
+  ontology="BP",
+  allGenes=genes_list,
+  annot=annFUN.GO2genes,
+  GO2genes=allGO2genes,
+  geneSel=selection,
+  nodeSize=10)
+results.ks <- runTest(GOdata, algorithm="classic", statistic="ks")
+goEnrichment <- GenTable(GOdata, KS=results.ks, orderBy="KS", topNodes=20)
+goEnrichment$KS <- as.numeric(goEnrichment$KS)
+goEnrichment <- goEnrichment[goEnrichment$KS<0.05,]
+goEnrichment <- goEnrichment[,c("GO.ID","Term","KS")]
+goEnrichment$Term <- gsub(" [a-z]*\\.\\.\\.$", "", goEnrichment$Term)
+goEnrichment$Term <- gsub("\\.\\.\\.$", "", goEnrichment$Term)
+goEnrichment$Term <- paste(goEnrichment$GO.ID, goEnrichment$Term, sep=", ")
+goEnrichment$Term <- factor(goEnrichment$Term, levels=rev(goEnrichment$Term))
+
+GO_plot <- ggplot(goEnrichment, aes(x=Term, y=-log10(KS))) +
+    stat_summary(geom = "bar", fun.y = mean, position = "dodge", fill = "darkkhaki") +
+    xlab("Biological process") +
+    ylab("Enrichment (-log10 of P-value)") +
+    ggtitle("GO Immune") +
+    scale_y_continuous(limits = c(0,5), expand = c(0,0)) +
+    theme_bw(base_size=24) +
+    theme(
+        legend.position='none',
+        legend.background=element_rect(),
+        plot.title=element_text(angle=0, size=24, face="bold", vjust=1),
+        axis.text.x=element_text(angle=0, size=18, face="bold", hjust=1.10),
+        axis.text.y=element_text(angle=0, size=18, face="bold", vjust=0.5),
+        axis.title=element_text(size=24, face="bold"),
+        legend.key=element_blank(),     #removes the border
+        legend.key.size=unit(1, "cm"),      #Sets overall area/size of the legend
+        legend.text=element_text(size=18),  #Text size
+        title=element_text(size=18)) +
+    guides(colour=guide_legend(override.aes=list(size=2.5))) +
+    coord_flip()
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/GO_Germline.svg", GO_plot, height = 10, width=15)
+```
+
+## Host metabolism dotplot supp
+```{r}
+ofav.combined.labeled <- readRDS("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/ofav.combined.labeled.2025.rds")
+my_levels <- c("Ofav-T0-T", "Ofav-T3-T", "Ofav-T5-T", "Ofav-T7-T")
+ofav.combined.labeled@meta.data$orig.ident <- factor(x = ofav.combined.labeled@meta.data$orig.ident, levels = my_levels)
+levels(ofav.combined.labeled@meta.data$orig.ident)
+ofav.combined.labeled.subset <- subset(x = ofav.combined.labeled, idents = c("Gastrodermis (Algal-hosting cells)", "Gastrodermis_1", "Gastrodermis_2", "Gastrodermis_3", "Gastrodermis_4", "Epidermis", "Calicoblastic Cells", "Cnidocytes", "Neurons_1", "Neurons_2", "Neurons_3", "Gland_1", "Gland_2", "Gland_3", "Immune", "Germline (sperm)", "Breviolum-hosting Cells", "Durusdinium-hosting Cells"))
+my_levels <- c("Gastrodermis (Algal-hosting cells)", "Gastrodermis_1", "Gastrodermis_2", "Gastrodermis_3", "Gastrodermis_4", "Epidermis", "Calicoblastic Cells", "Cnidocytes", "Neurons_1", "Neurons_2", "Neurons_3", "Gland_1", "Gland_2", "Gland_3", "Immune", "Germline (sperm)", "Breviolum-hosting Cells", "Durusdinium-hosting Cells")
+ofav.combined.labeled.subset@active.ident <- factor(x = ofav.combined.labeled.subset@active.ident, levels = my_levels)
+levels(ofav.combined.labeled.subset)
+DefaultAssay(ofav.combined.labeled.subset) <- "RNA"
+ofav.combined.labeled.subset$seurat_clusters.Timepoints <- paste(Idents(ofav.combined.labeled.subset), ofav.combined.labeled.subset$orig.ident, sep = "_")
+ofav.combined.labeled.subset$seurat_clusters <- Idents(ofav.combined.labeled.subset)
+Idents(ofav.combined.labeled.subset) <- "seurat_clusters.Timepoints"
+my_levels <- c("Gastrodermis (Algal-hosting cells)_Ofav-T0-T","Gastrodermis_1_Ofav-T0-T","Gastrodermis_2_Ofav-T0-T","Gastrodermis_3_Ofav-T0-T","Gastrodermis_4_Ofav-T0-T","Epidermis_Ofav-T0-T","Calicoblastic Cells_Ofav-T0-T","Cnidocytes_Ofav-T0-T","Neurons_1_Ofav-T0-T","Neurons_2_Ofav-T0-T","Neurons_3_Ofav-T0-T","Gland_1_Ofav-T0-T","Gland_2_Ofav-T0-T","Gland_3_Ofav-T0-T","Immune_Ofav-T0-T","Germline (sperm)_Ofav-T0-T","Breviolum-hosting Cells_Ofav-T0-T","Durusdinium-hosting Cells_Ofav-T0-T","Gastrodermis (Algal-hosting cells)_Ofav-T3-T","Gastrodermis_1_Ofav-T3-T","Gastrodermis_2_Ofav-T3-T","Gastrodermis_3_Ofav-T3-T","Gastrodermis_4_Ofav-T3-T","Epidermis_Ofav-T3-T","Calicoblastic Cells_Ofav-T3-T","Cnidocytes_Ofav-T3-T","Neurons_1_Ofav-T3-T","Neurons_2_Ofav-T3-T","Neurons_3_Ofav-T3-T","Gland_1_Ofav-T3-T","Gland_2_Ofav-T3-T","Gland_3_Ofav-T3-T","Immune_Ofav-T3-T","Germline (sperm)_Ofav-T3-T","Breviolum-hosting Cells_Ofav-T3-T","Durusdinium-hosting Cells_Ofav-T3-T","Gastrodermis (Algal-hosting cells)_Ofav-T5-T","Gastrodermis_1_Ofav-T5-T","Gastrodermis_2_Ofav-T5-T","Gastrodermis_3_Ofav-T5-T","Gastrodermis_4_Ofav-T5-T","Epidermis_Ofav-T5-T","Calicoblastic Cells_Ofav-T5-T","Cnidocytes_Ofav-T5-T","Neurons_1_Ofav-T5-T","Neurons_2_Ofav-T5-T","Neurons_3_Ofav-T5-T","Gland_1_Ofav-T5-T","Gland_2_Ofav-T5-T","Gland_3_Ofav-T5-T","Immune_Ofav-T5-T","Germline (sperm)_Ofav-T5-T","Breviolum-hosting Cells_Ofav-T5-T","Durusdinium-hosting Cells_Ofav-T5-T","Gastrodermis (Algal-hosting cells)_Ofav-T7-T","Gastrodermis_1_Ofav-T7-T","Gastrodermis_2_Ofav-T7-T","Gastrodermis_3_Ofav-T7-T","Gastrodermis_4_Ofav-T7-T","Epidermis_Ofav-T7-T","Calicoblastic Cells_Ofav-T7-T","Cnidocytes_Ofav-T7-T","Neurons_1_Ofav-T7-T","Neurons_2_Ofav-T7-T","Neurons_3_Ofav-T7-T","Gland_1_Ofav-T7-T","Gland_2_Ofav-T7-T","Gland_3_Ofav-T7-T","Immune_Ofav-T7-T","Germline (sperm)_Ofav-T7-T","Breviolum-hosting Cells_Ofav-T7-T","Durusdinium-hosting Cells_Ofav-T7-T")
+ofav.combined.labeled.subset@active.ident <- factor(x = ofav.combined.labeled.subset@active.ident, levels = my_levels)
+markers.to.plot <- c("QW917-027442", "QW917-027445", "QW917-004470", "QW917-034161", "QW917-030278", "QW917-001682")
+dp<- DotPlot(ofav.combined.labeled.subset, features = markers.to.plot, cols = c("#FFFFFF", "#FF0000"), dot.scale = 8, scale=FALSE) +
+    RotatedAxis() + ggtitle("Nitrogen Cycle Gene Orthologs: GS, GOGAT, GDH") + scale_color_gradient2(low="#FFFFFF", mid= "#FFCCCC", high = "#FF0000", midpoint = 0.5)
+dp
+ggsave("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/dotplot_CoralHostNitrogen_markers_orthlog.svg", dp, height = 20, width=10)
+```
+
+# Further RNA Control Analysis
+# RNA-Seq (de-seq2) https://bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#transcript-abundance-files-and-tximport-tximeta
+```{r}
+library(DESeq2)
+readpergene_sample1 <- read.table("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/controls/STAR_mapping/T0C_ReadsPerGene.out.tab", header = FALSE, sep = "\t", skip = 4)
+readpergene_sample1 <- readpergene_sample1[, c(1, 4)]
+colnames(readpergene_sample1) <- c("Gene", "T0C")
+readpergene_sample2 <- read.table("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/controls/STAR_mapping/T3C_ReadsPerGene.out.tab", header = FALSE, sep = "\t", skip = 4)
+readpergene_sample2 <- readpergene_sample2[, c(1, 4)]
+colnames(readpergene_sample2) <- c("Gene", "T3C")
+readpergene_sample3 <- read.table("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/controls/STAR_mapping/T5C_ReadsPerGene.out.tab", header = FALSE, sep = "\t", skip = 4)
+readpergene_sample3 <- readpergene_sample3[, c(1, 4)]
+colnames(readpergene_sample3) <- c("Gene", "T5C")
+readpergene_sample4 <- read.table("/Volumes/AMB_SSD1/archive/molabits_06042024/Ofav_Exp_Spring2022/controls/STAR_mapping/T7C_ReadsPerGene.out.tab", header = FALSE, sep = "\t", skip = 4)
+readpergene_sample4 <- readpergene_sample4[, c(1, 4)]
+colnames(readpergene_sample4) <- c("Gene", "T7C")
+# Repeat for other samples
+# Combine all Readpergene tables into a single data frame
+all_readpergene <- cbind(readpergene_sample1, readpergene_sample2, readpergene_sample3, readpergene_sample4)
+all_readpergene <- all_readpergene[, c(1, 2, 4, 6, 8)]
+rownames(all_readpergene) <- all_readpergene$Gene
+all_readpergene <- all_readpergene[, -1]
+# Calculate library sizes (total counts) for each sample
+library_sizes <- colSums(all_readpergene)
+# Calculate scaling factors
+scaling_factors <- mean(library_sizes) / library_sizes
+# Normalize the count data
+normalized_count_data <- t(t(all_readpergene) / scaling_factors)
+# Remove rows with all zero counts
+normalized_count_data <- normalized_count_data[rowSums(normalized_count_data) > 0, ]
+# Perform a t-test for each gene
+gene_p_values <- apply(normalized_count_data, 1, function(x) t.test(x)$p.value)
+gene_p_values_df <- data.frame(Gene = names(gene_p_values), gene_p_values = gene_p_values)
+# Adjust p-values for multiple testing (optional but recommended)
+adjusted_p_values <- p.adjust(gene_p_values, method = "fdr")
+print(adjusted_p_values)
+adjusted_p_values_df <- data.frame(Gene = names(adjusted_p_values), Adjusted_p_value = adjusted_p_values)
+
+genes_to_use <- c("QW917_005606","QW917_017006","QW917_008447","QW917_023414","QW917_015074","QW917_006430","QW917_015050","QW917_015057","QW917_006427","QW917_010727","QW917_015085","QW917_015093","QW917_015086","QW917_002182","QW917_024491","QW917_007665","QW917_010171","QW917_015084","QW917_005903","QW917_013386","QW917_022246","QW917_030399","symbB.v1.2.040993","QW917_029766","QW917_036205","QW917_036204","QW917_029646","QW917_030646","QW917_017942","QW917_023065","QW917_017802","QW917_007874","QW917_010131","QW917_002685","QW917_024964","QW917_016488","QW917_029111","QW917_003567","QW917_031733","QW917_003749","QW917_029192","QW917_017291","QW917_024490","QW917_033447","QW917_022625","QW917_025659","QW917_016021","QW917_010456","QW917_033785","QW917_010212","QW917_028556","QW917_008245","QW917_006873","QW917_017502","QW917_016489","QW917_009632","QW917_008509","QW917_002519","QW917_025475","QW917_015177","QW917_018368","QW917_026433","QW917_002663","QW917_018369","QW917_019148","QW917_025271","QW917_030974","QW917_016878","QW917_016501","QW917_007406","QW917_022132","QW917_028389","QW917_008368","QW917_006349","QW917_033275","QW917_013367","QW917_004807","QW917_013401","QW917_000356","QW917_016495","QW917_026774","QW917_018150","QW917_003080","QW917_024689","QW917_016859","QW917_014249","QW917_004830","QW917_011079","QW917_008044","QW917_010925","QW917_000806","QW917_032073","QW917_016496","QW917_025087","QW917_030749","QW917_036526","QW917_031955","QW917_003512","QW917_003517","QW917_031962","QW917_026897","QW917_031651")
+
+subset_data <- normalized_count_data[row.names(normalized_count_data) %in% genes_to_use, ]
+min_val <- -2
+max_val <- 2
+min_max_scaled_data <- apply(subset_data, 2, function(x) {
+  min_max_scaled <- (x - min(x)) / (max(x) - min(x))
+  scaled <- min_val + min_max_scaled * (max_val - min_val)
+  return(scaled)
+})
+
+scaled_data <- min_max_scaled_data
+
+# Generate a heatmap using heatmap function
+genes_to_user_reverse <- genes_to_use
+scaled_data_ordered <- scaled_data[genes_to_user_reverse, ]
+
+library(ComplexHeatmap)
+# Define the color gradient for the heatmap
+gradient_colors <- c("blue", "#fffff2", "red")
+col_fun <- colorRampPalette(gradient_colors)(256)
+# Create a Heatmap object
+heatmap_object <- Heatmap(scaled_data_ordered,
+                          name = "Gene Expression",
+                          col = col_fun,
+                          show_row_names = TRUE,  # Show gene names on the left
+                          row_names_gp = gpar(fontsize = 8),  # Adjust the font size of gene names
+                          cluster_rows = FALSE,  # Do not cluster rows
+                          show_heatmap_legend = TRUE,
+                          column_order = c("T0C", "T3C", "T5C", "T7C"),
+                          row_names_side = "left")  # Show heatmap legend
+svg("/Volumes/AMB_SSD1/scRNA_seq/AnthonyOfav/analysis/revision/figures/controls_hm.svg", 
+    height = 12, width = 7)
+draw(heatmap_object)
+dev.off()
+```
