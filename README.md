@@ -3,7 +3,8 @@
 
 📄 Pre-print is [here](https://www.researchsquare.com/article/rs-5397639/v1)
 
-👾 Code related to Bonacolta et al. Cell atlas of coral bleaching reveals symbiotic suppression of heat-stress genes:
+👾 Code related to Bonacolta et al. (2026) *Single-cell ecology of coral-algal symbiosis breakdown* in **Microbiome**
+:
   
   - `metabarcoding` - code and misc. files associated with the microbiome analysis
   - `scRNAseq` - code and misc. files associated with the single-cell RNA sequencing analysis
