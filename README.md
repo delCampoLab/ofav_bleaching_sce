@@ -1,7 +1,7 @@
 # Single-cell Ecology of *Orbicella faveolata* through bleaching
 💻 Access the web app [here](https://161.111.18.190:25251/scaocb/)!
 
-📄 Pre-print is [here](https://www.researchsquare.com/article/rs-5397639/v1)
+📄 Publication is [here](https://doi.org/10.1186/s40168-026-02506-6)
 
 👾 Code related to Bonacolta et al. (2026) *Single-cell ecology of coral-algal symbiosis breakdown* in **Microbiome**
 :
